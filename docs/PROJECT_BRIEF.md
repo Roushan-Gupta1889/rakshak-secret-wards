@@ -1,6 +1,6 @@
 # Team RAKSHAK (`team-rakshak`): Multilingual Indian Hospital Records Privacy Firewall
 
-**Track 3 · Secret Wards** · **Tech Stack**: Python 3.10+ (stdlib only, 0 external models) · **Repo**: https://github.com/team-rakshak/secret-wards
+**Track 3 · Secret Wards** · **Tech Stack**: Python 3.10+ (stdlib only, 0 external models) · **Repo**: https://github.com/Roushan-Gupta1889/rakshak-secret-wards
 
 ## 1. Team & Pitch
 
