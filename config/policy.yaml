@@ -1,0 +1,11 @@
+# RAKSHAK Privacy Rules
+# Applied by the pipeline during sanitization.
+
+age_band_years: 5          # ages become bands like 45-49 (the band must contain the true age)
+date_shift_max_days: 180   # every date of one patient moves by the same secret offset
+min_group_size: 5          # suppress or widen quasi-identifier combos rarer than this (k-anonymity)
+pin_generalize: prefix3    # 6-digit PIN → 3-digit prefix + ***
+village_generalize: remove # village → [VILLAGE] (keep district)
+house_generalize: remove   # house number → [HOUSE]
+locality_generalize: remove # mohalla/ward → [LOCALITY]
+landmark_generalize: remove # near X → [LANDMARK]

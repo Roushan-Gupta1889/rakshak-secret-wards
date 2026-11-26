@@ -1,0 +1,10 @@
+# Core dependencies for RAKSHAK
+# No LLMs, no large models, CPU-only, fully offline
+# All standard / well-known libraries
+
+# No external dependencies needed - RAKSHAK uses only the Python standard library.
+# This keeps it fast, lightweight, and guaranteed to work in the sandbox.
+#
+# The following are OPTIONAL for enhanced performance:
+# rapidfuzz>=3.0       # faster fuzzy matching (falls back to stdlib)
+# phonenumbers>=8.0    # phone validation (falls back to regex)
