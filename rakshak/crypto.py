@@ -12,11 +12,23 @@ _ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32
 
 
 def pseudonym(patient_key: str) -> str:
-    """HMAC-SHA256 keyed pseudonym. Same key+secret → same ID. Different secret → different ID."""
-    digest = hmac.new(SECRET, patient_key.encode("utf-8"), hashlib.sha256).digest()
-    n = int.from_bytes(digest[:5], "big")
-    code = "".join(_ALPHABET[(n >> (5 * i)) & 31] for i in range(6))
-    return f"PSN-{code}"
+    """HMAC-SHA256 keyed Crockford base32 pseudonym with deterministic rejection sampling.
+
+    Rejects all-digit 6-char codes so pseudonyms always contain at least one alphabetic character
+    with zero modulo bias. Same key+secret -> same ID. Different secret -> different ID.
+    """
+    msg = patient_key.encode("utf-8")
+    counter = 0
+    while counter < 64:
+        digest = hmac.new(SECRET, msg, hashlib.sha256).digest()
+        n = int.from_bytes(digest[:5], "big")
+        code = "".join(_ALPHABET[(n >> (5 * i)) & 31] for i in range(6))
+        if any(ch.isalpha() for ch in code):
+            return f"PSN-{code}"
+        counter += 1
+        msg = f"\x00rej|{counter}|{patient_key}".encode("utf-8")
+    # Unreachable (< 10^-192 probability): format-preserving fallback
+    return f"PSN-A{code[1:]}"
 
 
 def date_shift_days(patient_key: str, max_days: int = 180) -> int:
