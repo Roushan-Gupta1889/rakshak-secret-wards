@@ -72,6 +72,7 @@ _NON_PERSON_WORDS = {
     "jeevan", "jyoti", "arogya", "sanjeevani", "hardoi", "lifeline", "pathkind",
     "sadan", "seva", "diet", "doctor", "panel", "panels", "medicine", "surgery",
     "age", "dob", "sex", "gender", "uhid", "ipd", "opd", "adm",
+    "मंदिर", "मस्जिद", "गुरुद्वारा", "भवन", "पंचायत", "निकट", "पास", "तहसील", "ग्राम", "जिला", "मकान",
 }
 
 _NON_PERSON_CONTAINER_KEYS = {
@@ -600,6 +601,17 @@ class Pipeline:
                     and all(len(t) >= 3 and t[0].isupper() and not t.isupper() for t in toks)):
                 self._add_name_parts(cand, "patient")
 
+        # Collect additional contextual / relation / unseen-label names cleanly via names.find_names_in_text
+        for nm in find_names_in_text(text):
+            if nm.role == "doctor":
+                doc = re.sub(r"(?i)^dr\.?\s+", "", nm.surface).strip()
+                if doc:
+                    self.doctor_names.add(doc)
+            elif nm.role == "relative":
+                self._add_name_parts(nm.surface, "relative")
+            elif nm.role in ("patient", "context"):
+                self._add_name_parts(nm.surface, "patient")
+
         for m in re.finditer(r"\b[Dd][Rr]\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})", text):
             self.doctor_names.add(m.group(1))
 
@@ -714,19 +726,33 @@ class Pipeline:
 
         name_matches = find_names_in_text(text, self.all_names, self._gazetteer_rx)
         # Keep labelled/honorific patient names as primary; relative matches go to relatives_latin!
+        # Context mentions (Subscriber, Witnessed by, etc.) are fallback only if zero explicit patient names exist.
         rel_spans = [(nm.start, nm.end) for nm in name_matches if nm.role == "relative"]
+        ctx_spans = [(nm.start, nm.end) for nm in name_matches if nm.role == "context"]
+        ctx_fallback_tokens: set[str] = set()
+        ctx_fallback_full = ""
         for nm in name_matches:
             if nm.role == "doctor":
                 continue
             if nm.role == "relative":
                 relatives_latin |= extract_name_tokens_latin(nm.surface)
                 continue
-            # Do not let gazetteer patient matches duplicate relative spans!
+            if nm.role == "context":
+                ctx_fallback_tokens |= extract_name_tokens_latin(nm.surface)
+                if not ctx_fallback_full:
+                    ctx_fallback_full = nm.surface
+                continue
+            # Do not let gazetteer patient matches duplicate relative or secondary context spans!
             if any(nm.start < re_ and nm.end > rs for rs, re_ in rel_spans):
+                continue
+            if any(nm.start < ce and nm.end > cs for cs, ce in ctx_spans):
                 continue
             if not names_full:
                 names_full = nm.surface
             names_latin |= extract_name_tokens_latin(nm.surface)
+        if not names_latin and ctx_fallback_tokens:
+            names_latin |= ctx_fallback_tokens
+            names_full = ctx_fallback_full
 
         age_m = re.search(
             r"(?:(?<![a-zA-Z])(?i:age)|आयु|उम्र)\s*[:/-]?\s*(\d{1,3})"
@@ -1565,7 +1591,8 @@ class Pipeline:
                 result[clean_k] = v
                 continue
 
-            if kl in ("source_path", "source") and isinstance(v, str):
+            if (kl in ("source_path", "source", "path", "file_path", "filepath", "filename", "file_name", "document_path")
+                    or (kl in ("uri", "url") and not str(v).startswith(("http://hl7.org", "http://loinc.org", "http://snomed.info", "urn:")))) and isinstance(v, str):
                 result[clean_k] = self._clean_metadata_path(v, pid)
             elif kl == "hospital" and isinstance(v, str):
                 result[clean_k] = v

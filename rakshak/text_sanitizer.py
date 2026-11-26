@@ -153,8 +153,8 @@ class TextSanitizer:
             if m.type in _HARD_PII_TYPES or not overlaps_medical(m.start, m.end, medical_spans):
                 _add_repl(m.start, m.end, f"[{m.type}]")
 
-        # 2. Names from labels, honorifics, relatives, contextual cues, and gazetteer
-        for nm in find_names_in_text(norm_text, self.known_names, self.gazetteer_rx):
+        # 2. Names from contextual labels, honorifics, and relatives (gazetteer runs at Step 8 after Address/Village rules)
+        for nm in find_names_in_text(norm_text):
             if nm.role == "doctor":
                 continue
             if _overlaps_any(nm.start, nm.end, doctor_spans):

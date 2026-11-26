@@ -194,8 +194,8 @@ def extract_name_tokens_latin(name: str) -> frozenset[str]:
             c = canonical_name_token(trans)
         if c in _STOP_NAME_TOKENS:
             continue
-        # Strip non-alpha chars and MRN-like strings
-        if re.match(r"^(?:jjh|snj|dhh|ipd|adm|uhid|opd|bl)\d+", c):
+        # Strip non-alpha chars and MRN-like strings (generic hospital prefix + >=4 digits)
+        if re.match(r"^[a-z]{2,8}\d{4,}$", c):
             continue
         if len(c) >= 2 and any(ch.isalpha() for ch in c):
             canonical.add(c)

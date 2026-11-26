@@ -522,12 +522,79 @@ def _find_insurance_raw(text: str) -> list[PIIMatch]:
             for m in INSURANCE_RX.finditer(text)]
 
 
+MRN_LABEL_RX = re.compile(
+    r"(?i)(?:Hospital\s*ID|Patient\s*ID|MR\s*No\.?|MRN|UHID|Reg(?:istration)?\s*(?:No\.?|सं\.?)|"
+    r"Case\s*(?:ID|No\.?)|IPD\s*(?:No\.?|सं\.?)|OPD\s*(?:No\.?|सं\.?)|आईपीडी\s*सं\.?|पंजीकरण\s*सं\.?)"
+    r"\s*[:=]\s*([A-Za-z0-9][A-Za-z0-9\-/]{3,23})"
+)
+
+_GENERIC_MRN_RX = re.compile(
+    r"(?<![A-Za-z0-9])([A-Za-z]{2,8}(?:[-/]\d{1,8}(?:[-/]\d{1,8}){0,2}|-[A-Z]{2,5}[-/]\d{3,8}(?:[-/]\d{1,8})?)|[A-Za-z]{2,6}\d{5,9})(?![A-Za-z0-9])"
+)
+
+_NON_MRN_PREFIXES = {
+    "psn", "pmjay", "icd", "loinc", "iso", "utf", "rfc", "sha", "md5", "uuid",
+    "http", "https", "urn", "fhir", "covid", "sars", "hba1c", "trop", "anti",
+    "post", "pre", "sub", "inj", "tab", "cap", "syp", "mg", "mcg", "ml", "dl",
+    "ul", "tel", "mob", "dob", "pin", "pan", "abha", "uid", "nhs", "who",
+    "report", "forward", "bundle", "batch", "lot", "rx", "ds", "note",
+    "table", "page", "step", "ver", "version", "ext", "exports", "sanitized",
+    "discharge", "nursing", "reg", "opd-clinic", "followup",
+}
+
+
+def _is_valid_generic_mrn(tok: str, text: str, start: int, end: int) -> bool:
+    """Validate structural unseen hospital MRN while rejecting clinical/date/hash tokens."""
+    up = tok.upper()
+    if up.startswith(("PSN-", "PMJAY")):
+        return False
+    if sum(c.isdigit() for c in tok) < 4:
+        return False
+    m_pfx = re.match(r"^([A-Za-z]+)", tok)
+    if not m_pfx:
+        return False
+    pfx = m_pfx.group(1).lower()
+    if pfx in _NON_MRN_PREFIXES:
+        return False
+    pre = text[max(0, start - 18):start].lower()
+    if any(sch in pre for sch in ("urn:uuid:", "urn:raksha:", "http://hl7.org", "http://loinc.org", "http://snomed.info")):
+        return False
+    # Slash-only paths (no hyphen): require uppercase letter prefix or 4+ digit trailing segment
+    if "/" in tok and "-" not in tok:
+        if not (tok[0].isupper() or re.search(r"/\d{4,}", tok)):
+            return False
+    post = text[end:min(len(text), end + 8)].lower()
+    if re.match(r"^\s*(?:mg|ml|mcg|iu|units)\b", post):
+        return False
+    return True
+
+
 def _find_mrn_raw(text: str) -> list[PIIMatch]:
-    results = []
+    results: list[PIIMatch] = []
     for rx in MRN_PATTERNS:
         for m in rx.finditer(text):
             results.append(PIIMatch("MRN", m.start(), m.end(), m.group(0), "patient"))
-    return results
+    for m in MRN_LABEL_RX.finditer(text):
+        val = m.group(1)
+        up = val.upper()
+        if not up.startswith(("PSN-", "PMJAY")) and sum(c.isdigit() for c in val) >= 3:
+            if not re.fullmatch(r"\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}", val):
+                results.append(PIIMatch("MRN", m.start(1), m.end(1), val, "patient"))
+    for m in _GENERIC_MRN_RX.finditer(text):
+        tok = m.group(1)
+        if _is_valid_generic_mrn(tok, text, m.start(1), m.end(1)):
+            results.append(PIIMatch("MRN", m.start(1), m.end(1), tok, "patient"))
+
+    # Deduplicate keeping longest MRN span first
+    results.sort(key=lambda x: (-len(x.surface), x.start))
+    kept: list[PIIMatch] = []
+    occ: set[int] = set()
+    for m in results:
+        sp = set(range(m.start, m.end))
+        if not (sp & occ):
+            kept.append(m)
+            occ |= sp
+    return sorted(kept, key=lambda x: x.start)
 
 
 def _find_pin_raw(text: str) -> list[PIIMatch]:

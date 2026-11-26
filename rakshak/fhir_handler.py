@@ -4,7 +4,7 @@ from __future__ import annotations
 import base64 as b64mod
 import copy
 import re
-from .detectors import try_decode_b64_text, try_decode_hex_text
+from .detectors import try_decode_b64_text, try_decode_hex_text, find_mrn, find_all_identifiers
 from .privacy import shift_date_string
 from .text_sanitizer import TextSanitizer
 
@@ -103,7 +103,7 @@ def sanitize_fhir_bundle(data: dict, patient_key: str | None = None,
     meta = result.get("meta", {})
     if "source" in meta:
         source = str(meta["source"])
-        if re.search(r"(?:UHID|SNJ|JJH|DHH|IP|IPD|ADM)", source, re.I):
+        if find_all_identifiers(source):
             meta["source"] = "[REDACTED]"
 
     for entry in result.get("entry", []):
@@ -141,10 +141,7 @@ def sanitize_fhir_bundle(data: dict, patient_key: str | None = None,
             sys_val = str(ident.get("system", "")).lower()
             if "raksha" in sys_val:
                 continue
-            if re.search(
-                r"(?:\d{10,14}|[A-Z]{5}\d{4}[A-Z]|(?:JJH|SNJ|DHH|UHID)[\-/]?\d|IP[D]?[\-/]?\d|ADM\d)",
-                val, re.I,
-            ):
+            if find_all_identifiers(val):
                 ident["value"] = pseudonym or "[REDACTED]"
 
         _clean_extensions(resource.get("extension", []), pseudonym, known_names, patient_key)

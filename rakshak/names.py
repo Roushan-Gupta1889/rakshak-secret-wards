@@ -115,23 +115,35 @@ def is_devanagari(text: str) -> bool:
 # Name extraction patterns
 # ─────────────────────────────────────────────────────────────────────────────
 
-# After label: Name: Xxx Yyy (single space inside name so multi-space gap before Age/Sex stops!)
+# After explicit patient label: Name: Xxx Yyy
 _NAME_AFTER_LABEL = re.compile(
-    r"(?i:Patient\s*(?:'s)?\s*Name|Name|patient_name)\s*[:=]\s*"
+    r"(?i:Patient\s*(?:'s)?\s*Name|Pt\.?\s*Name|Full\s*Name|Name|patient_name)\s*[:=]\s*"
     r"([A-Z][a-zA-Z.']*(?: [A-Z][a-zA-Z.']*){0,3})",
+)
+
+# Secondary policyholder / subscriber / applicant / claimant label (context role)
+_SUBSCRIBER_LABEL_RX = re.compile(
+    r"(?i:\b(?:Subscriber|Beneficiary|Applicant|Policyholder|Member\s*Name|Claimant|Insured|Contact\s*Person))\s*[:=]\s*"
+    r"([A-Z\u0900-\u097F][a-zA-Z\u0900-\u097F.']*(?: [A-Z\u0900-\u097F][a-zA-Z\u0900-\u097F.']*){0,3})",
+)
+
+# "Case of <Person Name>" (explicitly guarded against medical "Known case of <disease>")
+_CASE_OF_NAME_RX = re.compile(
+    r"(?<![A-Za-z])\b(?i:Case\s+of)\s+([A-Z][a-zA-Z.']+(?: [A-Z][a-zA-Z.']+){1,2})",
 )
 
 # After Hindi label: मरीज़ का नाम: xxx or नाम: xxx (handles "का नाम:" without capturing "का नाम"!)
 _HINDI_NAME_AFTER_LABEL = re.compile(
-    r"(?:(?:मरीज़|मरीज|रोगी)\s+(?:का\s+)?नाम|(?<!का\s)नाम)\s*[:=]\s*"
+    r"(?:(?:मरीज़|मरीज|रोगी|बीमित|आवेदक|सदस्य)\s+(?:का\s+)?नाम|(?<!का\s)नाम)\s*[:=]\s*"
     r"([\u0900-\u097F]+(?: [\u0900-\u097F]+){0,3})",
 )
 
-# After relative prefix: S/o, D/o, W/o or पिता/पति का नाम:
+# After relative/caretaker prefix: S/o, D/o, W/o, B/o, M/o, F/o, Care-taker:, Guardian:, or Hindi relation
 _RELATIVE_AFTER_PREFIX = re.compile(
     r"(?:"
-    r"(?i:(?:S|D|W)\s*/\s*(?:o|O)|Son\s+of|Daughter\s+of|Wife\s+of)\s+"
-    r"|(?:पिता|माता|पति|अभिभावक)\s+(?:का\s+)?नाम\s*[:=]\s*"
+    r"(?i:\b(?:S|D|W|B|M|F)\s*/\s*O\b|(?-i:\bH\s*/\s*o\b)|(?:Son|Daughter|Wife|Mother|Father|Baby|Husband)(?:-in-law)?\s+of)\s+"
+    r"|(?i:\b(?:Care[-\s]?taker|Caretaker|Guardian|Next\s+of\s+Kin|Informant|Nominee|Emergency\s+Contact))\s*[:=\-]?\s+"
+    r"|(?:पिता|माता|पति|पत्नी|पुत्र|पुत्री|शिशु|अभिभावक|संरक्षक|परिजन|तीमारदार)\s*(?:(?:का|की|के)\s+नाम\s*[:=]?|[:=])\s*"
     r")([A-Z\u0900-\u097F][a-zA-Z\u0900-\u097F.']*(?: [A-Z\u0900-\u097F][a-zA-Z\u0900-\u097F.']*){0,3})",
 )
 
@@ -174,6 +186,25 @@ class NameMatch(NamedTuple):
     surface: str
     role: str       # "patient", "relative", "doctor"
     script: str     # "latin", "deva", "hinglish"
+
+
+_MEDICAL_NON_NAME_WORDS = {
+    "fever", "pain", "headache", "cough", "vomiting", "diarrhea", "weakness",
+    "diabetes", "mellitus", "hypertension", "asthma", "tuberculosis", "bronchitis",
+    "malaria", "dengue", "typhoid", "anemia", "anaemia", "thyroid", "pneumonia",
+    "copd", "ckd", "ihd", "bph", "att", "dyspnea", "chest", "burning",
+    "swelling", "bleeding", "nausea", "fatigue", "constipation", "breathlessness",
+    "dizziness", "giddiness", "abdominal", "urinary", "back", "joint", "body",
+    "loose", "shortness", "breath", "chills", "rigors", "acute", "chronic",
+    "mild", "moderate", "severe", "primary", "essential", "unspecified",
+    "stable", "active", "positive", "negative", "normal", "abnormal",
+    "disease", "disorder", "syndrome", "infection", "failure", "appendicitis",
+}
+
+
+def _looks_medical_or_inst_phrase(cand: str) -> bool:
+    low_toks = [t.lower().strip(".,;:") for t in cand.split()]
+    return any(t in _MEDICAL_NON_NAME_WORDS or t in _CONTEXT_SKIP_INST for t in low_toks)
 
 
 def _trim_label_tokens(text: str, m_start: int, group_text: str) -> tuple[int, int, str]:
@@ -245,12 +276,33 @@ def find_names_in_text(text: str, known_names: set[str] | None = None,
         if name:
             results.append(NameMatch(ns, ne, name, "patient", "deva"))
 
-    # 4. Relative names (S/o, D/o, W/o) — emit ONLY the name span, preserve "S/o " prefix!
+    # 4. Relative / Caretaker names (S/o, D/o, W/o, B/o, M/o, F/o, Care-taker:)
     for m in _RELATIVE_AFTER_PREFIX.finditer(text):
         ns, ne, name = _trim_label_tokens(text, m.start(1), m.group(1).strip())
-        if name and not _in_doctor(ns, ne):
+        if not name or _in_doctor(ns, ne):
+            continue
+        if _looks_medical_or_inst_phrase(name):
+            continue
+        script = "deva" if is_devanagari(name) else "latin"
+        results.append(NameMatch(ns, ne, name, "relative", script))
+
+    # 4b. Secondary labeled person names (Subscriber:, Beneficiary:, etc.) & Case of <Name>
+    for m in _SUBSCRIBER_LABEL_RX.finditer(text):
+        raw_name = m.group(1).strip()
+        if not raw_name or raw_name.lower().startswith("dr"):
+            continue
+        ns, ne, name = _trim_label_tokens(text, m.start(1), raw_name)
+        if name and not _in_doctor(ns, ne) and not _looks_medical_or_inst_phrase(name):
             script = "deva" if is_devanagari(name) else "latin"
-            results.append(NameMatch(ns, ne, name, "relative", script))
+            results.append(NameMatch(ns, ne, name, "context", script))
+
+    for m in _CASE_OF_NAME_RX.finditer(text):
+        pre = text[max(0, m.start() - 15):m.start()].lower()
+        if any(w in pre for w in ("known", "k/c/o", "suspected", "confirmed", "diagnosed")):
+            continue
+        ns, ne, name = _trim_label_tokens(text, m.start(1), m.group(1).strip())
+        if name and len(name.split()) >= 2 and not _in_doctor(ns, ne) and not _looks_medical_or_inst_phrase(name):
+            results.append(NameMatch(ns, ne, name, "patient", "latin"))
 
     # 5. C/O disambiguation: only strictly TitleCase non-medical names
     medical_words = {"fever", "pain", "headache", "cough", "vomiting", "diarrhea",
