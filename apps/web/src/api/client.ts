@@ -6,12 +6,15 @@ import {
   CsrfResponseSchema,
   HealthResponseSchema,
   PolicyResponseSchema,
+  RecordsPageResponseSchema,
   RunSummaryResponseSchema,
   type BenchmarkResponse,
   type CsrfResponse,
   type HealthResponse,
   type PolicyResponse,
+  type RecordsPageResponse,
   type RunSummaryResponse,
+  type SanitizedRecordItem,
   type SecretMode,
 } from "./schemas";
 
@@ -116,6 +119,79 @@ export async function fetchRunSummary(runId: string): Promise<RunSummaryResponse
   const path = `/api/runs/${encodeURIComponent(runId)}`;
   const { data } = await fetchJsonValidated(path, RunSummaryResponseSchema, 8000);
   return data;
+}
+
+export async function fetchRecordsPage(
+  runId: string,
+  opts: {
+    page?: number;
+    pageSize?: number;
+    status?: string;
+    patientPsn?: string;
+    fileQ?: string;
+  } = {},
+): Promise<RecordsPageResponse> {
+  const params = new URLSearchParams();
+  params.set("page", String(opts.page ?? 1));
+  params.set("page_size", String(opts.pageSize ?? 100));
+  if (opts.status) params.set("status", opts.status);
+  if (opts.patientPsn) params.set("patient_psn", opts.patientPsn);
+  if (opts.fileQ) params.set("file_q", opts.fileQ);
+
+  const path = `/api/runs/${encodeURIComponent(runId)}/records?${params.toString()}`;
+  const { data } = await fetchJsonValidated(path, RecordsPageResponseSchema, 8000);
+  return data;
+}
+
+export async function fetchAllRunRecordsIndex(
+  runId: string,
+  maxPages = 50,
+): Promise<{ total: number; records: SanitizedRecordItem[] }> {
+  const first = await fetchRecordsPage(runId, { page: 1, pageSize: 100 });
+  const records: SanitizedRecordItem[] = [...first.items];
+  const total = first.total;
+
+  let page = 2;
+  while (records.length < total && page <= maxPages && first.items.length > 0) {
+    const next = await fetchRecordsPage(runId, { page, pageSize: 100 });
+    if (!next.items.length) break;
+    records.push(...next.items);
+    if (next.items.length < 100) break;
+    page += 1;
+  }
+
+  return { total, records };
+}
+
+export async function fetchSanitizedTextFile(runId: string, outputRelPath: string): Promise<string> {
+  const url = buildSanitizedFileDownloadUrl(runId, outputRelPath, false);
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { Accept: "text/plain" },
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (err) {
+    const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
+    throw new ApiRequestError(
+      isTimeout ? `Timed out reading sanitized file ${outputRelPath}.` : `Local API unreachable (${url}).`,
+      { code: isTimeout ? "TIMEOUT" : "NETWORK_UNREACHABLE", isNetworkOrTimeout: true },
+    );
+  }
+
+  if (!resp.ok) {
+    let payload: unknown = null;
+    try {
+      payload = await resp.json();
+    } catch {
+      payload = null;
+    }
+    throw parseErrorPayload(url, resp.status, payload);
+  }
+
+  return resp.text();
 }
 
 export async function submitSanitizationRun(opts: {

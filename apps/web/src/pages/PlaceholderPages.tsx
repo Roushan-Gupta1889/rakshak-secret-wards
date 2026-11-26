@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ArrowLeft, Cpu, GitBranch, KeyRound, ShieldAlert, Table2 } from "lucide-react";
+import { ArrowLeft, Cpu, GitBranch, KeyRound, ShieldAlert } from "lucide-react";
 import { useHealthQuery, usePolicyQuery } from "@/api/queries";
 import { DataTable } from "@/components/tables/DataTable";
 import { Badge, ProvenanceBadge } from "@/components/ui/badge";
@@ -9,29 +9,18 @@ import { Panel, PanelContent, PanelDescription, PanelHeader, PanelTitle } from "
 import { ErrorState, SectionHeader } from "@/components/ui/state-views";
 import { useUiStore, type NavPageId } from "@/stores/uiStore";
 
-type DeferredPageId = Exclude<NavPageId, "overview" | "studio" | "policies">;
+type DeferredPageId = Exclude<NavPageId, "overview" | "studio" | "registry" | "policies">;
 
 const DEFERRED_META: Record<
   DeferredPageId,
   {
     title: string;
     subtitle: string;
-    icon: typeof Table2;
+    icon: typeof KeyRound;
     endpoints: string[];
     capabilities: string[];
   }
 > = {
-  registry: {
-    title: "Patient Registry Explorer",
-    subtitle: "Cross-file canonical pseudonym ledger and record-level linkage viewer.",
-    icon: Table2,
-    endpoints: ["GET /api/runs/{run_id}/records", "GET /api/runs/{run_id}/files/{file_path}"],
-    capabilities: [
-      "Filter and sort linked patient clusters across heterogeneous hospital sources via TanStack Table",
-      "Inspect source-to-pseudonym mapping confidence without ever displaying raw identifiers or secrets",
-      "Trace anonymized FHIR R4 resource references back to run provenance",
-    ],
-  },
   unlinkability: {
     title: "Unlinkability & Crypto Lab",
     subtitle: "Domain-separated rejection sampling inspector and numeric-collision verification.",
@@ -67,7 +56,7 @@ export function Phase2CPlaceholder({ pageId }: { pageId: DeferredPageId }) {
         title={meta.title}
         subtitle={meta.subtitle}
         provenance="EMPTY"
-        provenanceLabel="PHASE 2D · RESERVED MODULE"
+        provenanceLabel="PHASE 2E · RESERVED MODULE"
         rightSlot={
           <Button variant="secondary" size="sm" onClick={() => setActivePage("overview")}>
             <ArrowLeft className="h-3.5 w-3.5" />
@@ -83,9 +72,9 @@ export function Phase2CPlaceholder({ pageId }: { pageId: DeferredPageId }) {
               <Icon className="h-4 w-4" />
             </div>
             <div>
-              <PanelTitle>Reserved for Phase 2D Interactive Workflows</PanelTitle>
+              <PanelTitle>Reserved for Phase 2E Interactive Workflows</PanelTitle>
               <PanelDescription>
-                Interactive sanitization execution is active in Sanitization Studio. Deep record exploration and privacy lab workflows are scoped for Phase 2D.
+                Sanitization Studio and Medical Registry are live. Privacy attack labs and cryptographic unlinkability verification workflows are scheduled for Phase 2E.
               </PanelDescription>
             </div>
           </div>
@@ -278,7 +267,7 @@ export function PoliciesArchitecturePage() {
           <PanelHeader>
             <div className="flex items-center gap-2">
               <Cpu className="h-4 w-4 text-cyan-400" />
-              <PanelTitle>Phase 2A → 2C API Contract Boundary</PanelTitle>
+              <PanelTitle>Phase 2A → 2D API Contract Boundary</PanelTitle>
             </div>
             <Badge variant="derived">VERIFIED CONTRACT</Badge>
           </PanelHeader>
@@ -293,7 +282,7 @@ export function PoliciesArchitecturePage() {
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800/80 bg-[#080E1C] px-3 py-2">
               <code className="break-all font-mono text-slate-300">POST /api/runs &amp; /api/runs/&#123;id&#125;*</code>
-              <Badge variant="live">LIVE · STUDIO</Badge>
+              <Badge variant="live">LIVE · STUDIO &amp; REGISTRY</Badge>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800/80 bg-[#080E1C] px-3 py-2">
               <code className="break-all font-mono text-amber-300">GET /api/analytics/benchmark</code>

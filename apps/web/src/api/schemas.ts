@@ -111,6 +111,26 @@ export const RunSummaryResponseSchema = z.object({
 });
 export type RunSummaryResponse = z.infer<typeof RunSummaryResponseSchema>;
 
+export const SanitizedRecordItemSchema = z.object({
+  index: z.number().int().nonnegative(),
+  file: z.string().min(1),
+  loc: z.string().min(1),
+  patient: z.string().nullable().optional().default(null),
+  status: z.string().nullable().optional().default(null),
+  preview: z.string(),
+});
+export type SanitizedRecordItem = z.infer<typeof SanitizedRecordItemSchema>;
+
+export const RecordsPageResponseSchema = z.object({
+  provenance: z.literal("DERIVED"),
+  run_id: z.string().min(1),
+  total: z.number().int().nonnegative(),
+  page: z.number().int().positive(),
+  page_size: z.number().int().positive(),
+  items: z.array(SanitizedRecordItemSchema),
+});
+export type RecordsPageResponse = z.infer<typeof RecordsPageResponseSchema>;
+
 export const BenchmarkResponseSchema = z.object({
   provenance: ProvenanceSchema,
   milestones: z.array(
