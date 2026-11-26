@@ -25,7 +25,10 @@ from .detectors import (
 )
 from .names import find_names_in_text, is_name_token, compile_gazetteer_rx
 from .medical import find_medical_spans, overlaps_medical
-from .columns import classify_column, ColumnType
+from .columns import (
+    classify_column, ColumnType, infer_csv_column_types,
+    infer_json_int_type, is_probable_person_name_value, is_obfuscated_json_key,
+)
 from .privacy import shift_date_string
 from .linker import (
     PatientLinker, RecordEvidence, normalize_phone, normalize_mrn,
@@ -96,10 +99,50 @@ _PROSE_KEYS = {
     "comments", "summary", "text", "body", "narrative", "details",
 }
 
+_CLINICAL_ADMIN_JSON_KEYS = {
+    "diagnosis", "diagnoses", "condition", "conditions", "disease", "diseases",
+    "complaint", "complaints", "symptom", "symptoms", "history", "medication",
+    "medications", "drug", "drugs", "rx", "test", "tests", "panel", "panels",
+    "lab", "labs", "procedure", "procedures", "department", "dept", "ward",
+    "bed", "hospital", "facility", "clinic", "unit", "visit_type", "encounter_type",
+    "status", "outcome", "disposition", "category", "type", "program", "scheme",
+    "package", "source", "format", "schema", "version", "exported_by", "gender",
+    "sex", "ling", "relation", "district", "dist", "state", "country", "city",
+    "tehsil", "block", "village", "advice", "investigation", "specialty",
+}
+
 _RECORD_LIST_KEYS = {
     "patients", "visits", "records", "tickets", "entries", "cases",
     "admissions", "encounters", "claims", "reports",
 }
+
+
+def _infer_dict_is_person(obj: dict, parent_key: str = "") -> bool:
+    """Determine contextually whether a JSON dict represents a patient/person record."""
+    pkl = parent_key.lower()
+    if pkl in _NON_PERSON_CONTAINER_KEYS:
+        return False
+    rt = str(obj.get("resourceType", "")).lower()
+    if rt in ("organization", "practitioner", "location"):
+        return False
+    if pkl in _PERSON_CONTAINER_KEYS or pkl in _RECORD_LIST_KEYS or "patient" in pkl:
+        return True
+    sibs = {canonical_clean(str(k)).lower() for k in obj.keys()}
+    if sibs & {"age", "sex", "gender", "dob", "uhid", "mobile", "phone", "first", "last",
+               "aadhaar", "aadhar", "adhar", "abha", "pincode", "pin"}:
+        return True
+    for k, v in obj.items():
+        ct = classify_column(str(k))
+        if ct in (ColumnType.PATIENT_NAME, ColumnType.MRN, ColumnType.PHONE,
+                  ColumnType.AADHAAR, ColumnType.ABHA, ColumnType.DOB,
+                  ColumnType.EMAIL, ColumnType.PAN, ColumnType.INSURANCE):
+            return True
+        if isinstance(v, int) and not isinstance(v, bool):
+            if infer_json_int_type(str(k), v, parent_key, sibs) in (
+                ColumnType.PHONE, ColumnType.AADHAAR, ColumnType.ABHA
+            ):
+                return True
+    return False
 
 
 def _try_decode_b64_text(val: str) -> str | None:
@@ -123,7 +166,7 @@ def _is_record_list(key: str, items: list) -> bool:
         if ct in (ColumnType.PATIENT_NAME, ColumnType.MRN, ColumnType.PHONE,
                   ColumnType.AADHAAR, ColumnType.ABHA) or str(sk).lower() in ("patient", "patient_ref", "raised_by"):
             return True
-    return False
+    return _infer_dict_is_person(sample, key)
 
 
 def _is_multi_patient_index(data: dict) -> bool:
@@ -357,7 +400,7 @@ class Pipeline:
     def _collect_names_csv(self, text: str, ext: str):
         delim = "\t" if ext == ".tsv" else detect_delimiter(text)
         header, body = read_csv_rows(text, delim)
-        col_types = [classify_column(h) for h in header]
+        col_types = infer_csv_column_types(header, body)
 
         for row in body:
             first_last = []
@@ -401,10 +444,7 @@ class Pipeline:
             if isinstance(obj, dict):
                 pkl = parent_key.lower()
                 # Check if this dict itself looks like a person object
-                dict_is_person = in_person or pkl in _PERSON_CONTAINER_KEYS or any(
-                    k.lower() in {"age", "sex", "gender", "dob", "uhid", "mobile", "phone", "first", "last"}
-                    for k in obj.keys()
-                )
+                dict_is_person = in_person or _infer_dict_is_person(obj, parent_key)
                 # In FHIR Bundle entries, inspect resourceType
                 rt = str(obj.get("resourceType", "")).lower()
                 if rt in ("organization", "practitioner", "location"):
@@ -442,8 +482,18 @@ class Pipeline:
                             self._collect_names_text(dec)
                         continue
 
-                    if kl in ("patient_name", "full_name", "first_name", "last_name",
-                              "firstname", "lastname", "naam") or (
+                    key_ct = classify_column(str(k))
+                    is_unknown_person_leaf = (
+                        key_ct == ColumnType.UNKNOWN
+                        and isinstance(v, str)
+                        and dict_is_person
+                        and pkl not in _NON_PERSON_CONTAINER_KEYS
+                        and kl not in _CLINICAL_ADMIN_JSON_KEYS
+                        and kl not in _PROSE_KEYS
+                        and ((is_obfuscated_json_key(str(k)) and is_probable_person_name_value(v, False))
+                             or is_probable_person_name_value(v, require_name_hint=True))
+                    )
+                    if key_ct == ColumnType.PATIENT_NAME or is_unknown_person_leaf or (
                         kl in ("name", "patient") and dict_is_person
                         and pkl not in _NON_PERSON_CONTAINER_KEYS
                     ):
@@ -740,7 +790,7 @@ class Pipeline:
                 self.linker.add_record(ev)
             return
 
-        col_types = [classify_column(h) for h in header]
+        col_types = infer_csv_column_types(header, body)
         for i, row in enumerate(body):
             phones: set[str] = set()
             mrns: set[str] = set()
@@ -872,6 +922,8 @@ class Pipeline:
             pkl = pk.lower()
             if pkl in _NON_PERSON_CONTAINER_KEYS or pkl in _DOCTOR_KEYS:
                 continue
+            sibling_keys = {canonical_clean(str(sk)).lower() for sk in obj.keys()}
+            dict_is_person = _infer_dict_is_person(obj, pk)
 
             for k, v in obj.items():
                 kl = str(k).lower()
@@ -902,11 +954,19 @@ class Pipeline:
                             gender = gender or "M"
                     else:
                         stack.append((v, str(k)))
-                elif isinstance(v, (str, int)):
-                    vs = str(v).strip()
+                elif isinstance(v, (str, int)) and not isinstance(v, bool):
+                    vs_raw = str(v).strip()
+                    vs = canonical_clean(vs_raw, decode_escapes=True).strip() if isinstance(v, str) else vs_raw
                     if not vs:
                         continue
                     ct = classify_column(str(k))
+                    if isinstance(v, int) and ct == ColumnType.UNKNOWN:
+                        ct = infer_json_int_type(str(k), v, pk, sibling_keys)
+                    elif (ct == ColumnType.UNKNOWN and isinstance(v, str) and dict_is_person
+                          and kl not in _CLINICAL_ADMIN_JSON_KEYS and kl not in _PROSE_KEYS):
+                        if ((is_obfuscated_json_key(str(k)) and is_probable_person_name_value(vs, False))
+                                or is_probable_person_name_value(vs, require_name_hint=True)):
+                            ct = ColumnType.PATIENT_NAME
                     if ct == ColumnType.DOCTOR:
                         continue
                     elif kl == "data" and isinstance(v, str):
@@ -922,7 +982,7 @@ class Pipeline:
                         if not names_full:
                             names_full = vs
                     elif ct == ColumnType.RELATIVE_NAME:
-                        cleaned_rel = re.sub(r"(?i)^(?:[SDW]\s*/\s*O)\s*", "", vs).strip()
+                        cleaned_rel = re.sub(r"(?i)^(?:[SDWBMF]\s*/\s*O)\s*", "", vs).strip()
                         relatives_latin |= extract_name_tokens_latin(cleaned_rel)
                     elif ct == ColumnType.PHONE:
                         for pm in find_phones(vs):
@@ -945,6 +1005,12 @@ class Pipeline:
                         d = re.sub(r"\D", "", vs)
                         if len(d) == 14:
                             abha.add(d)
+                    elif ct == ColumnType.PAN:
+                        for pm in find_pan(vs):
+                            pan.add(pm.surface.upper())
+                    elif ct == ColumnType.INSURANCE:
+                        for im in find_insurance(vs):
+                            insurance.add(im.surface.upper())
                     elif ct == ColumnType.AGE and isinstance(v, (int, str)):
                         am = re.search(r"\d{1,3}", vs)
                         if am and 0 < int(am.group(0)) < 120:
@@ -1185,7 +1251,7 @@ class Pipeline:
         if not header or not body:
             return self._sanitize_text(text, rel, records)
 
-        col_types = [classify_column(h) for h in header]
+        col_types = infer_csv_column_types(header, body)
         clean_header = self._clean_csv_header(header)
         date_hint_default = "mdy" if "arogya" in rel.lower() else "dmy"
 
@@ -1443,6 +1509,8 @@ class Pipeline:
             return obj
 
         pkl = parent_key.lower()
+        sibling_keys = {canonical_clean(str(sk)).lower() for sk in obj.keys()}
+        dict_is_person = _infer_dict_is_person(obj, parent_key)
         result: dict = {}
         for k, v in obj.items():
             k_str = str(k)
@@ -1483,6 +1551,13 @@ class Pipeline:
                     continue
 
             col_type = classify_column(k_str)
+            if isinstance(v, int) and not isinstance(v, bool) and col_type == ColumnType.UNKNOWN:
+                col_type = infer_json_int_type(k_str, v, parent_key, sibling_keys)
+            elif (col_type == ColumnType.UNKNOWN and isinstance(v, str) and dict_is_person
+                  and kl not in _CLINICAL_ADMIN_JSON_KEYS and kl not in _PROSE_KEYS):
+                if ((is_obfuscated_json_key(k_str) and is_probable_person_name_value(v, False))
+                        or is_probable_person_name_value(v, require_name_hint=True)):
+                    col_type = ColumnType.PATIENT_NAME
 
             # Nested non-person sub-objects ("name" under "panels" or "hospital" etc.)
             if kl == "name" and pkl in ("panels", "panel", "diagnosis", "rx", "results", "hospital",
