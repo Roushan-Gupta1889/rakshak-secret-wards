@@ -10,6 +10,7 @@ const buttonVariants = cva(
       variant: {
         primary: "border-cyan-500/40 bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/25",
         secondary: "border-slate-700/80 bg-slate-800/70 text-slate-200 hover:bg-slate-800 hover:border-slate-600",
+        danger: "border-red-500/40 bg-red-500/15 text-red-200 hover:bg-red-500/25",
         ghost: "border-transparent bg-transparent text-slate-300 hover:bg-slate-800/60 hover:text-slate-100",
       },
       size: {

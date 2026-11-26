@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConsoleLayout } from "@/layouts/ConsoleLayout";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { Phase2CPlaceholder, PoliciesArchitecturePage } from "@/pages/PlaceholderPages";
+import { SanitizationStudioPage } from "@/pages/SanitizationStudioPage";
 import { useUiStore } from "@/stores/uiStore";
 
 const queryClient = new QueryClient({
@@ -19,9 +20,10 @@ function ConsoleRouter() {
   switch (activePage) {
     case "overview":
       return <OverviewPage />;
+    case "studio":
+      return <SanitizationStudioPage />;
     case "policies":
       return <PoliciesArchitecturePage />;
-    case "studio":
     case "registry":
     case "unlinkability":
     case "privacy":

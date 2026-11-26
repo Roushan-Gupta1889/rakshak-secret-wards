@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ArrowLeft, Cpu, FileLock2, GitBranch, KeyRound, ShieldAlert, Table2 } from "lucide-react";
+import { ArrowLeft, Cpu, GitBranch, KeyRound, ShieldAlert, Table2 } from "lucide-react";
 import { useHealthQuery, usePolicyQuery } from "@/api/queries";
 import { DataTable } from "@/components/tables/DataTable";
 import { Badge, ProvenanceBadge } from "@/components/ui/badge";
@@ -9,29 +9,18 @@ import { Panel, PanelContent, PanelDescription, PanelHeader, PanelTitle } from "
 import { ErrorState, SectionHeader } from "@/components/ui/state-views";
 import { useUiStore, type NavPageId } from "@/stores/uiStore";
 
-type Phase2CPageId = Exclude<NavPageId, "overview" | "policies">;
+type DeferredPageId = Exclude<NavPageId, "overview" | "studio" | "policies">;
 
-const PHASE_2C_META: Record<
-  Phase2CPageId,
+const DEFERRED_META: Record<
+  DeferredPageId,
   {
     title: string;
     subtitle: string;
-    icon: typeof FileLock2;
+    icon: typeof Table2;
     endpoints: string[];
     capabilities: string[];
   }
 > = {
-  studio: {
-    title: "Sanitization Studio",
-    subtitle: "Interactive Stage 1 CLI job submission, progress tracking, and FHIR bundle inspection.",
-    icon: FileLock2,
-    endpoints: ["GET /api/csrf", "POST /api/runs", "GET /api/runs/{run_id}", "GET /api/runs/{run_id}/bundle.zip"],
-    capabilities: [
-      "Upload CSV, JSON, and unstructured text inputs through CSRF-protected multipart submission",
-      "Spawn isolated subprocess executions of the frozen Phase 1E CLI without in-process Pipeline() coupling",
-      "Inspect sanitized output files, quarantine manifests, and download zip archives locally",
-    ],
-  },
   registry: {
     title: "Patient Registry Explorer",
     subtitle: "Cross-file canonical pseudonym ledger and record-level linkage viewer.",
@@ -58,7 +47,7 @@ const PHASE_2C_META: Record<
     title: "Privacy Attack & Cohort Lab",
     subtitle: "Adversarial A1–A7 simulation suite and adaptive k-anonymity cohort inspector.",
     icon: ShieldAlert,
-    endpoints: ["Planned Phase 2C simulation bridge over Secret-Wards-ToolKit evaluators"],
+    endpoints: ["Planned simulation bridge over Secret-Wards-ToolKit evaluators"],
     capabilities: [
       "Run A1–A7 attacker probes and compare baseline vs hardened cohort-generalized outputs",
       "Inspect adaptive cohort suppression/generalization against min_group_size: 5 policy constraints",
@@ -67,9 +56,9 @@ const PHASE_2C_META: Record<
   },
 };
 
-export function Phase2CPlaceholder({ pageId }: { pageId: Phase2CPageId }) {
+export function Phase2CPlaceholder({ pageId }: { pageId: DeferredPageId }) {
   const setActivePage = useUiStore((s) => s.setActivePage);
-  const meta = PHASE_2C_META[pageId];
+  const meta = DEFERRED_META[pageId];
   const Icon = meta.icon;
 
   return (
@@ -78,7 +67,7 @@ export function Phase2CPlaceholder({ pageId }: { pageId: Phase2CPageId }) {
         title={meta.title}
         subtitle={meta.subtitle}
         provenance="EMPTY"
-        provenanceLabel="PHASE 2C · SCOPED PLACEHOLDER"
+        provenanceLabel="PHASE 2D · RESERVED MODULE"
         rightSlot={
           <Button variant="secondary" size="sm" onClick={() => setActivePage("overview")}>
             <ArrowLeft className="h-3.5 w-3.5" />
@@ -94,10 +83,9 @@ export function Phase2CPlaceholder({ pageId }: { pageId: Phase2CPageId }) {
               <Icon className="h-4 w-4" />
             </div>
             <div>
-              <PanelTitle>Reserved for Phase 2C Interactive Workflows</PanelTitle>
+              <PanelTitle>Reserved for Phase 2D Interactive Workflows</PanelTitle>
               <PanelDescription>
-                Phase 2B delivers the console shell, live health/policy telemetry, and historical Phase 1E benchmark
-                observability. Interactive execution for this module starts in Phase 2C.
+                Interactive sanitization execution is active in Sanitization Studio. Deep record exploration and privacy lab workflows are scoped for Phase 2D.
               </PanelDescription>
             </div>
           </div>
@@ -290,7 +278,7 @@ export function PoliciesArchitecturePage() {
           <PanelHeader>
             <div className="flex items-center gap-2">
               <Cpu className="h-4 w-4 text-cyan-400" />
-              <PanelTitle>Phase 2A → 2B API Contract Boundary</PanelTitle>
+              <PanelTitle>Phase 2A → 2C API Contract Boundary</PanelTitle>
             </div>
             <Badge variant="derived">VERIFIED CONTRACT</Badge>
           </PanelHeader>
@@ -305,7 +293,7 @@ export function PoliciesArchitecturePage() {
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800/80 bg-[#080E1C] px-3 py-2">
               <code className="break-all font-mono text-slate-300">POST /api/runs &amp; /api/runs/&#123;id&#125;*</code>
-              <Badge variant="default">PHASE 2C UI</Badge>
+              <Badge variant="live">LIVE · STUDIO</Badge>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800/80 bg-[#080E1C] px-3 py-2">
               <code className="break-all font-mono text-amber-300">GET /api/analytics/benchmark</code>

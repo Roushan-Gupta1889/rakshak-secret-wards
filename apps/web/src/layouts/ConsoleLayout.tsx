@@ -24,21 +24,21 @@ import { useUiStore, type NavPageId } from "@/stores/uiStore";
 interface NavItem {
   id: NavPageId;
   label: string;
-  group: "MONITORING" | "PIPELINE (PHASE 2C)" | "GOVERNANCE";
+  group: "MONITORING" | "WORKFLOW" | "UPCOMING MODULES" | "GOVERNANCE";
   icon: React.ComponentType<{ className?: string }>;
   badge?: string;
 }
 
 const NAV_ITEMS: NavItem[] = [
   { id: "overview", label: "Overview", group: "MONITORING", icon: LayoutDashboard },
-  { id: "studio", label: "Sanitization Studio", group: "PIPELINE (PHASE 2C)", icon: FlaskConical, badge: "2C" },
-  { id: "registry", label: "Medical Registry", group: "PIPELINE (PHASE 2C)", icon: Database, badge: "2C" },
-  { id: "unlinkability", label: "Unlinkability Lab", group: "PIPELINE (PHASE 2C)", icon: FileKey2, badge: "2C" },
-  { id: "privacy", label: "Privacy Analytics", group: "PIPELINE (PHASE 2C)", icon: Activity, badge: "2C" },
+  { id: "studio", label: "Sanitization Studio", group: "WORKFLOW", icon: FlaskConical },
+  { id: "registry", label: "Medical Registry", group: "UPCOMING MODULES", icon: Database, badge: "2D" },
+  { id: "unlinkability", label: "Unlinkability Lab", group: "UPCOMING MODULES", icon: FileKey2, badge: "2D" },
+  { id: "privacy", label: "Privacy Analytics", group: "UPCOMING MODULES", icon: Activity, badge: "2D" },
   { id: "policies", label: "Policies & Architecture", group: "GOVERNANCE", icon: Scale },
 ];
 
-const NAV_GROUPS: NavItem["group"][] = ["MONITORING", "PIPELINE (PHASE 2C)", "GOVERNANCE"];
+const NAV_GROUPS: NavItem["group"][] = ["MONITORING", "WORKFLOW", "UPCOMING MODULES", "GOVERNANCE"];
 
 function SidebarContent({
   collapsed,
