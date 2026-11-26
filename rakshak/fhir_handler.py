@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64 as b64mod
 import copy
 import re
+from .detectors import try_decode_b64_text, try_decode_hex_text
 from .privacy import shift_date_string
 from .text_sanitizer import TextSanitizer
 
@@ -50,14 +51,15 @@ def _clean_resource_data_fields(resource: dict, patient_key: str | None,
     sanitizer = TextSanitizer(known_names=known, patient_key=patient_key, pseudonym=pseudonym)
 
     def _clean_value(val: str) -> str:
-        try:
-            decoded_bytes = b64mod.b64decode(val + "=" * (-len(val) % 4))
-            decoded = decoded_bytes.decode("utf-8", errors="ignore")
-            if decoded and len(decoded) > 5 and decoded.isprintable():
-                cleaned = sanitizer.sanitize(decoded)
-                return b64mod.b64encode(cleaned.encode("utf-8")).decode("ascii")
-        except Exception:
-            pass
+        dec = try_decode_b64_text(val)
+        if dec is not None:
+            cleaned = sanitizer.sanitize(dec)
+            return b64mod.b64encode(cleaned.encode("utf-8")).decode("ascii")
+        dec_hex = try_decode_hex_text(val)
+        if dec_hex is not None:
+            cleaned = sanitizer.sanitize(dec_hex)
+            if cleaned != dec_hex:
+                return cleaned.encode("utf-8").hex()
         return val
 
     def _walk(obj):

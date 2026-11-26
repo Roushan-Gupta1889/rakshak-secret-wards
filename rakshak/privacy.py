@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 from .crypto import age_band, shift_date, date_shift_days
+from .detectors import canonical_clean, normalize_with_map, map_norm_span
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -16,8 +17,8 @@ _SHORT_RX = re.compile(r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2})")
 
 
 def parse_date(text: str, hint: str = "dmy") -> dt.date | None:
-    """Parse a date string with format hint (dmy or mdy)."""
-    text = text.strip()
+    """Parse a date string (including Indic digits) with format hint (dmy or mdy)."""
+    text = canonical_clean(text, decode_escapes=False).strip()
 
     # Try YYYY-MM-DD first (unambiguous)
     m = _YMD_RX.match(text)
@@ -82,7 +83,7 @@ def detect_date_format(text: str) -> str:
 def shift_date_string(date_str: str, patient_key: str, hint: str = "dmy",
                        max_days: int = 180) -> str:
     """Parse, shift, and re-format a date or ISO datetime string."""
-    s = date_str.strip()
+    s = canonical_clean(date_str, decode_escapes=False).strip()
     # Preserve ISO datetime / timezone suffix if present (e.g. "2026-08-30T09:30:00+05:30")
     if len(s) >= 10 and s[4:5] == "-" and s[7:8] == "-" and (len(s) == 10 or s[10] in ("T", " ")):
         date_part, rest = s[:10], s[10:]
@@ -116,31 +117,39 @@ _AGE_SLASH = re.compile(r"(?<![\d/])(\d{1,3})\s*(?:(Yrs?|Years?|वर्ष)\s*
 
 
 def generalize_age_in_text(text: str, width: int = 5) -> str:
-    """Replace exact ages with 5-year bands (or 85+) in text."""
-    def replace_age(m):
-        full = m.group(0)
+    """Replace exact ages (ASCII, Indic digits, or zero-width obfuscated) with 5-year bands."""
+    norm, s_map, e_map = normalize_with_map(text, decode_escapes=False)
+    repls: list[tuple[int, int, str]] = []
+
+    for m in _AGE_IN_TEXT.finditer(norm):
         age_val = int(m.group(2))
         if age_val < 1 or age_val > 120:
-            return full
-        # Split prefix up to the number so original label ("Age: ", "आयु: ") is preserved
-        num_start = m.start(2) - m.start(0)
-        num_end = m.end(2) - m.start(0)
-        band = age_band(age_val, width)
-        return full[:num_start] + band + full[num_end:]
+            continue
+        os_idx, oe_idx = map_norm_span(s_map, e_map, m.start(2), m.end(2))
+        repls.append((os_idx, oe_idx, age_band(age_val, width)))
 
-    text = _AGE_IN_TEXT.sub(replace_age, text)
-
-    # Also handle "48/F" or "52 Yrs/F" patterns
-    def replace_age_slash(m):
+    for m in _AGE_SLASH.finditer(norm):
         age_val = int(m.group(1))
         if age_val < 1 or age_val > 120:
-            return m.group(0)
+            continue
+        os_idx, oe_idx = map_norm_span(s_map, e_map, m.start(), m.end())
         band = age_band(age_val, width)
         unit = f" {m.group(2)}" if m.group(2) else ""
-        return f"{band}{unit}/{m.group(3)}"
+        repls.append((os_idx, oe_idx, f"{band}{unit}/{m.group(3)}"))
 
-    text = _AGE_SLASH.sub(replace_age_slash, text)
-    return text
+    if not repls:
+        return text
+    repls.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+    filtered: list[tuple[int, int, str]] = []
+    last_e = -1
+    for s, e, r in repls:
+        if s >= last_e:
+            filtered.append((s, e, r))
+            last_e = e
+    out = text
+    for s, e, r in reversed(filtered):
+        out = out[:s] + r + out[e:]
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────

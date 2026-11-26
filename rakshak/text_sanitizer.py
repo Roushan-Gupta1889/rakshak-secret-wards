@@ -1,11 +1,14 @@
 """Text sanitizer: free-text cleaning for discharge summaries, prescriptions, nursing notes."""
 from __future__ import annotations
 
+import base64 as b64mod
 import datetime as dt
 import re
 from .detectors import (
-    find_all_identifiers, find_pin, find_doctor_spans,
-    NAME_LABEL_RX, DEVA_PHONE_RX, RELATIVE_LABEL_RX, HINDI_NAME_RX,
+    find_all_identifiers_raw, _find_pin_raw, find_doctor_spans,
+    normalize_with_map, map_norm_span,
+    try_decode_b64_text, try_decode_hex_text,
+    NAME_LABEL_RX, RELATIVE_LABEL_RX, HINDI_NAME_RX,
     ADDRESS_LABEL_RX, HOUSE_RX, MOHALLA_RX, LANDMARK_RX, VILLAGE_LABEL_RX,
     DOB_LABEL_RX, DATE_RX,
 )
@@ -40,6 +43,8 @@ _CO_NON_NAME_WORDS = {
     "chest", "burning", "swelling", "bleeding", "nausea", "fatigue",
 }
 _ADDR_WARD_RX = re.compile(r"(?i)(?:Address|Addr|C/O)[^\n]*?\bWard\s+(\d+)\b")
+_INLINE_B64_RX = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{24,}={0,2}(?![A-Za-z0-9+/=])")
+_INLINE_HEX_RX = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{24,}(?![0-9a-fA-F])")
 
 
 def _overlaps_any(s: int, e: int, spans: list[tuple[int, int]]) -> bool:
@@ -64,40 +69,92 @@ class TextSanitizer:
                  pseudonym: str | None = None,
                  date_hint: str = "dmy",
                  enable_pin: bool = True,
-                 gazetteer_rx: re.Pattern | None = None):
+                 gazetteer_rx: re.Pattern | None = None,
+                 _decode_containers: bool = True):
         self.known_names = known_names or set()
         self.patient_key = patient_key
         self.pseudonym = pseudonym
         self.date_hint = date_hint
         self.enable_pin = enable_pin
         self.gazetteer_rx = gazetteer_rx if gazetteer_rx is not None else compile_gazetteer_rx(self.known_names)
+        self._decode_containers = _decode_containers
+
+    def _scrub_inline_encoded(self, text: str) -> str:
+        """Sanitize embedded base64 and hex-encoded UTF-8 payloads inside free text."""
+        if not self._decode_containers or len(text) < 24:
+            return text
+        child: TextSanitizer | None = None
+
+        def _get_child() -> TextSanitizer:
+            nonlocal child
+            if child is None:
+                child = TextSanitizer(
+                    known_names=self.known_names,
+                    patient_key=self.patient_key,
+                    pseudonym=self.pseudonym,
+                    date_hint=self.date_hint,
+                    enable_pin=self.enable_pin,
+                    gazetteer_rx=self.gazetteer_rx,
+                    _decode_containers=False,
+                )
+            return child
+
+        if len(text) >= 24:
+            def _rep_hex(m: re.Match) -> str:
+                tok = m.group(0)
+                if len(tok) % 2 != 0:
+                    return tok
+                pre = text[max(0, m.start() - 12):m.start()].lower()
+                if any(w in pre for w in ("sha256", "sha1", "md5", "hash", "uuid")):
+                    return tok
+                dec = try_decode_hex_text(tok)
+                if dec is None:
+                    return tok
+                cleaned = _get_child().sanitize(dec)
+                return cleaned.encode("utf-8").hex() if cleaned != dec else tok
+
+            text = _INLINE_HEX_RX.sub(_rep_hex, text)
+
+            def _rep_b64(m: re.Match) -> str:
+                tok = m.group(0)
+                if not any(c in "+/=0123456789" for c in tok):
+                    return tok
+                dec = try_decode_b64_text(tok)
+                if dec is None:
+                    return tok
+                cleaned = _get_child().sanitize(dec)
+                return b64mod.b64encode(cleaned.encode("utf-8")).decode("ascii") if cleaned != dec else tok
+
+            text = _INLINE_B64_RX.sub(_rep_b64, text)
+        return text
 
     def sanitize(self, text: str) -> str:
         """Full sanitization pipeline for a text document."""
-        medical_spans = find_medical_spans(text)
-        doctor_spans = find_doctor_spans(text)
+        text = self._scrub_inline_encoded(text)
+        norm_text, s_map, e_map = normalize_with_map(text, decode_escapes=True)
 
-        # (start, end, replacement)
+        medical_spans = find_medical_spans(norm_text)
+        doctor_spans = find_doctor_spans(norm_text)
+
+        # (orig_start, orig_end, replacement)
         replacements: list[tuple[int, int, str]] = []
 
-        # 0.5 Devanagari phone numbers (hard PII)
-        for m in DEVA_PHONE_RX.finditer(text):
-            if not _overlaps_repls(m.start(), m.end(), replacements):
-                replacements.append((m.start(), m.end(), "[PHONE]"))
+        def _add_repl(ns: int, ne: int, repl: str) -> bool:
+            os_idx, oe_idx = map_norm_span(s_map, e_map, ns, ne)
+            if _overlaps_repls(os_idx, oe_idx, replacements):
+                return False
+            replacements.append((os_idx, oe_idx, repl))
+            return True
 
         # 1. Hard & soft identifiers (MRN/PHONE/AADHAAR/ABHA/PAN/EMAIL/INSURANCE always win)
         _HARD_PII_TYPES = {"MRN", "PHONE", "AADHAAR", "AADHAAR_MASKED", "ABHA_NUMBER",
                            "ABHA_ADDRESS", "PAN", "EMAIL", "INSURANCE_ID"}
-        for m in find_all_identifiers(text):
-            if m.type in _HARD_PII_TYPES:
-                if not _overlaps_repls(m.start, m.end, replacements):
-                    replacements.append((m.start, m.end, f"[{m.type}]"))
-            elif not overlaps_medical(m.start, m.end, medical_spans):
-                if not _overlaps_repls(m.start, m.end, replacements):
-                    replacements.append((m.start, m.end, f"[{m.type}]"))
+        for m in find_all_identifiers_raw(norm_text):
+            if m.type in _HARD_PII_TYPES or not overlaps_medical(m.start, m.end, medical_spans):
+                _add_repl(m.start, m.end, f"[{m.type}]")
 
         # 2. Names from labels, honorifics, relatives, contextual cues, and gazetteer
-        for nm in find_names_in_text(text, self.known_names, self.gazetteer_rx):
+        for nm in find_names_in_text(norm_text, self.known_names, self.gazetteer_rx):
             if nm.role == "doctor":
                 continue
             if _overlaps_any(nm.start, nm.end, doctor_spans):
@@ -107,19 +164,17 @@ class TextSanitizer:
             surface_lower = nm.surface.lower()
             if any(dn in surface_lower for dn in DISEASE_NAMES):
                 continue
-            pre = text[max(0, nm.start - 10):nm.start].lower()
-            if "asha" in pre and "worker" in text[nm.start:nm.end + 10].lower():
-                continue
-            if _overlaps_repls(nm.start, nm.end, replacements):
+            pre = norm_text[max(0, nm.start - 10):nm.start].lower()
+            if "asha" in pre and "worker" in norm_text[nm.start:nm.end + 10].lower():
                 continue
             label = self.pseudonym if (self.pseudonym and nm.role == "patient") else (
                 "[RELATIVE]" if nm.role == "relative" else "[NAME]"
             )
-            replacements.append((nm.start, nm.end, label))
+            _add_repl(nm.start, nm.end, label)
 
         # 3. Additional labelled names & relative labels
         for rx, label in [(NAME_LABEL_RX, "[NAME]"), (HINDI_NAME_RX, "[NAME]")]:
-            for m in rx.finditer(text):
+            for m in rx.finditer(norm_text):
                 name_part = m.group(1).strip() if m.lastindex else m.group(0)
                 if not name_part:
                     continue
@@ -129,12 +184,11 @@ class TextSanitizer:
                     continue
                 if overlaps_medical(name_start, name_end, medical_spans):
                     continue
-                if not _overlaps_repls(name_start, name_end, replacements):
-                    repl = self.pseudonym if self.pseudonym and label == "[NAME]" else label
-                    replacements.append((name_start, name_end, repl))
+                repl = self.pseudonym if self.pseudonym and label == "[NAME]" else label
+                _add_repl(name_start, name_end, repl)
 
         # RELATIVE_LABEL_RX: S/o, D/o, W/o always replace regardless of medical spans
-        for m in RELATIVE_LABEL_RX.finditer(text):
+        for m in RELATIVE_LABEL_RX.finditer(norm_text):
             name_part = m.group(1).strip() if m.lastindex else m.group(0)
             if not name_part:
                 continue
@@ -142,11 +196,10 @@ class TextSanitizer:
             name_end = name_start + len(name_part)
             if _overlaps_any(name_start, name_end, doctor_spans):
                 continue
-            if not _overlaps_repls(name_start, name_end, replacements):
-                replacements.append((name_start, name_end, "[RELATIVE]"))
+            _add_repl(name_start, name_end, "[RELATIVE]")
 
         # 3b. C/O relative pattern "C/O Ramesh Yadav" (never K/C/O or medical complaints)
-        for m in _CO_REL_RX.finditer(text):
+        for m in _CO_REL_RX.finditer(norm_text):
             name_part = m.group(1).strip()
             if name_part.split()[0].lower() in _CO_NON_NAME_WORDS:
                 continue
@@ -154,80 +207,69 @@ class TextSanitizer:
             name_end = m.end(1)
             if _overlaps_any(name_start, name_end, doctor_spans):
                 continue
-            if not _overlaps_repls(name_start, name_end, replacements):
-                replacements.append((name_start, name_end, "[RELATIVE]"))
+            _add_repl(name_start, name_end, "[RELATIVE]")
 
         # 3c. Address line street/house/mohalla/village/tehsil (preserve ", Distt. ... - PIN")
-        for m in ADDRESS_LABEL_RX.finditer(text):
+        for m in ADDRESS_LABEL_RX.finditer(norm_text):
             addr = m.group(1)
             addr_start = m.start() + m.group(0).find(addr)
-            # Keep ", Distt. ..." / ", District ..." suffix (preserves district utility + PIN handled below)
             split_m = re.search(r",\s*(?:Distt?\.?|District|जिला)\b", addr, re.I)
             redact_end = addr_start + split_m.start() if split_m else addr_start + len(addr)
-            if redact_end > addr_start and not _overlaps_repls(addr_start, redact_end, replacements):
-                replacements.append((addr_start, redact_end, "[ADDRESS]"))
+            if redact_end > addr_start:
+                _add_repl(addr_start, redact_end, "[ADDRESS]")
 
         # 4. Address-context Ward/locality & standalone Address components
-        for m in _ADDR_WARD_RX.finditer(text):
+        for m in _ADDR_WARD_RX.finditer(norm_text):
             ward_text = f"Ward {m.group(1)}"
             w_pos = m.start() + m.group(0).find(ward_text)
             if w_pos < 0:
                 continue
-            w_end = w_pos + len(ward_text)
-            if not _overlaps_repls(w_pos, w_end, replacements):
-                replacements.append((w_pos, w_end, "[LOCALITY]"))
+            _add_repl(w_pos, w_pos + len(ward_text), "[LOCALITY]")
 
         for rx, label in [(HOUSE_RX, "[HOUSE]"), (MOHALLA_RX, "[LOCALITY]"),
                            (LANDMARK_RX, "[LANDMARK]")]:
-            for m in rx.finditer(text):
-                s, e = m.start(), m.end()
-                if not _overlaps_repls(s, e, replacements):
-                    if not overlaps_medical(s, e, medical_spans):
-                        replacements.append((s, e, label))
+            for m in rx.finditer(norm_text):
+                if not overlaps_medical(m.start(), m.end(), medical_spans):
+                    _add_repl(m.start(), m.end(), label)
 
         # 5. Village names
-        for m in VILLAGE_LABEL_RX.finditer(text):
+        for m in VILLAGE_LABEL_RX.finditer(norm_text):
             village = m.group(1).strip()
             vs = m.start() + m.group(0).find(village)
-            ve = vs + len(village)
-            if not _overlaps_repls(vs, ve, replacements):
-                replacements.append((vs, ve, "[VILLAGE]"))
+            _add_repl(vs, vs + len(village), "[VILLAGE]")
 
         # 6. DOB (shift if patient key available)
-        for m in DOB_LABEL_RX.finditer(text):
+        for m in DOB_LABEL_RX.finditer(norm_text):
             date_str = m.group(1)
             ds = m.start() + m.group(0).find(date_str)
             de = ds + len(date_str)
-            if not _overlaps_repls(ds, de, replacements):
-                if self.patient_key:
-                    shifted = shift_date_string(date_str, self.patient_key, self.date_hint)
-                    replacements.append((ds, de, shifted))
-                else:
-                    replacements.append((ds, de, "[DOB]"))
+            if self.patient_key:
+                shifted = shift_date_string(date_str, self.patient_key, self.date_hint)
+                _add_repl(ds, de, shifted)
+            else:
+                _add_repl(ds, de, "[DOB]")
 
         # 7. PIN codes (skip when cleaning numeric lab/amount columns)
         if self.enable_pin:
-            for m in find_pin(text):
+            for m in _find_pin_raw(norm_text):
                 if not overlaps_medical(m.start, m.end, medical_spans):
-                    if not _overlaps_repls(m.start, m.end, replacements):
-                        pin_gen = m.surface[:3] + "***" if len(m.surface) >= 6 else "[PIN]"
-                        replacements.append((m.start, m.end, pin_gen))
+                    pin_gen = m.surface[:3] + "***" if len(m.surface) >= 6 else "[PIN]"
+                    _add_repl(m.start, m.end, pin_gen)
 
         # 8. Known names gazetteer fallback — skip doctors, medical spans, and covered spans
         if self.gazetteer_rx is not None:
-            for m in self.gazetteer_rx.finditer(text):
+            for m in self.gazetteer_rx.finditer(norm_text):
                 pos, end = m.start(), m.end()
-                if pos > 0 and text[pos - 1].isdigit():
+                if pos > 0 and norm_text[pos - 1].isdigit():
                     continue
-                if end < len(text) and text[end].isdigit():
+                if end < len(norm_text) and norm_text[end].isdigit():
                     continue
                 if _overlaps_any(pos, end, doctor_spans):
                     continue
                 if overlaps_medical(pos, end, medical_spans):
                     continue
-                if not _overlaps_repls(pos, end, replacements):
-                    repl = self.pseudonym if self.pseudonym else "[NAME]"
-                    replacements.append((pos, end, repl))
+                repl = self.pseudonym if self.pseudonym else "[NAME]"
+                _add_repl(pos, end, repl)
 
         # Deterministic sort: earlier start first, longest span first on ties
         replacements.sort(key=lambda x: (x[0], -(x[1] - x[0]), x[2]))
@@ -252,13 +294,15 @@ class TextSanitizer:
         return result
 
     def _shift_dates_in_text(self, text: str) -> str:
-        """Shift all numeric and month-name dates in text by the patient's secret offset."""
-        def replace_date(m):
-            return shift_date_string(m.group(0), self.patient_key, self.date_hint)
+        """Shift all numeric and month-name dates (incl. Indic digits) by the patient's offset."""
+        norm, s_map, e_map = normalize_with_map(text, decode_escapes=False)
+        repls: list[tuple[int, int, str]] = []
 
-        text = DATE_RX.sub(replace_date, text)
+        for m in DATE_RX.finditer(norm):
+            os_idx, oe_idx = map_norm_span(s_map, e_map, m.start(), m.end())
+            repls.append((os_idx, oe_idx, shift_date_string(m.group(0), self.patient_key, self.date_hint)))
 
-        def replace_month_date(m):
+        for m in _MONTH_DATE_RX.finditer(norm):
             day = int(m.group(1))
             month = _MONTHS[m.group(2).lower()]
             yr_str = m.group(3)
@@ -266,10 +310,22 @@ class TextSanitizer:
             try:
                 d = dt.date(year, month, day)
             except ValueError:
-                return m.group(0)
+                continue
             shifted = shift_date(d, self.patient_key)
-            if yr_str:
-                return f"{shifted.day} {_MONTH_NAMES[shifted.month]} {shifted.year}"
-            return f"{shifted.day} {_MONTH_NAMES[shifted.month]}"
+            rep = f"{shifted.day} {_MONTH_NAMES[shifted.month]} {shifted.year}" if yr_str else f"{shifted.day} {_MONTH_NAMES[shifted.month]}"
+            os_idx, oe_idx = map_norm_span(s_map, e_map, m.start(), m.end())
+            repls.append((os_idx, oe_idx, rep))
 
-        return _MONTH_DATE_RX.sub(replace_month_date, text)
+        if not repls:
+            return text
+        repls.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+        out = text
+        last_e = -1
+        filtered = []
+        for s, e, r in repls:
+            if s >= last_e:
+                filtered.append((s, e, r))
+                last_e = e
+        for s, e, r in reversed(filtered):
+            out = out[:s] + r + out[e:]
+        return out

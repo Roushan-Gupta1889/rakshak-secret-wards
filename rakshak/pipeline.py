@@ -18,9 +18,10 @@ from .io_utils import (
     write_csv, parse_json_safe, is_fhir_bundle,
 )
 from .detectors import (
-    find_all_identifiers, find_phones, find_mrn, find_aadhaar,
-    find_abha, find_pan, find_insurance, find_doctor_spans,
-    PHONE_RX,
+    find_all_identifiers, find_all_identifiers_raw, find_phones, find_mrn,
+    find_aadhaar, find_abha, find_pan, find_insurance, find_doctor_spans,
+    normalize_with_map, map_norm_span, canonical_clean,
+    try_decode_b64_text, try_decode_hex_text, PHONE_RX,
 )
 from .names import find_names_in_text, is_name_token, compile_gazetteer_rx
 from .medical import find_medical_spans, overlaps_medical
@@ -102,22 +103,8 @@ _RECORD_LIST_KEYS = {
 
 
 def _try_decode_b64_text(val: str) -> str | None:
-    """Decode base64 ASCII string if it appears to contain readable text."""
-    if not isinstance(val, str) or len(val) < 20 or len(val) % 4 == 1:
-        return None
-    if not re.fullmatch(r"[A-Za-z0-9+/=\s]+", val):
-        return None
-    compact = re.sub(r"\s+", "", val)
-    if len(compact) < 20:
-        return None
-    try:
-        raw = b64mod.b64decode(compact + "=" * (-len(compact) % 4), validate=False)
-        dec = raw.decode("utf-8", errors="ignore")
-        if dec and len(dec) >= 6 and sum(ch.isprintable() or ch in "\r\n\t" for ch in dec) / len(dec) > 0.85:
-            return dec
-    except Exception:
-        pass
-    return None
+    """Delegate to shared base64 payload decoder."""
+    return try_decode_b64_text(val)
 
 
 def _is_record_list(key: str, items: list) -> bool:
@@ -217,8 +204,8 @@ class Pipeline:
         # ─── Pass 1b: Also collect genuine person names & phones from filenames ─
         for rel in sorted(raw_data.keys()):
             basename = rel.rsplit("/", 1)[-1] if "/" in rel else rel
-            basename_no_ext = re.sub(r"\.\w+$", "", basename)
-            parts = re.split(r"[_\-]", basename_no_ext)
+            basename_no_ext = canonical_clean(re.sub(r"\.\w+$", "", basename), decode_escapes=True)
+            parts = re.split(r"[_\-\s]", basename_no_ext)
             for p in parts:
                 p = p.strip()
                 if (p and len(p) >= 3 and p[0].isupper() and p.isalpha()
@@ -497,8 +484,8 @@ class Pipeline:
 
                     if kl in _PROSE_KEYS and isinstance(v, str):
                         self._collect_names_text(v)
-                    elif isinstance(v, str) and len(v) >= 24:
-                        dec = _try_decode_b64_text(v)
+                    elif isinstance(v, str) and len(v) >= 16:
+                        dec = _try_decode_b64_text(v) or try_decode_hex_text(v)
                         if dec:
                             self._collect_names_text(dec)
 
@@ -513,6 +500,7 @@ class Pipeline:
                         stack.append((item, parent_key, in_person or child_person))
 
     def _collect_names_text(self, text: str):
+        text = canonical_clean(text, decode_escapes=True)
         _HINDI_NAME_LABEL_RX = re.compile(
             r"(?:(?:मरीज़|मरीज|रोगी|पिता|माता|पति)\s+(?:का\s+)?नाम|(?<!का\s)नाम)\s*[:=]\s*"
             r"([\u0900-\u097F]+(?: [\u0900-\u097F]+){0,3})"
@@ -567,6 +555,7 @@ class Pipeline:
 
     def _add_name_parts(self, name: str, role: str):
         """Add a person name and its tokens to self.all_names, filtering institutional words."""
+        name = canonical_clean(name, decode_escapes=True)
         name = name.strip().rstrip(".,;:")
         name = re.split(
             r"\s{2,}|\s+(?:आयु|उम्र|लिंग|पता|ग्राम|age|sex|gender|dob|mob|ph|phone|address|addr)\b",
@@ -645,6 +634,7 @@ class Pipeline:
     def _extract_evidence_from_text(self, text: str, file_rel: str,
                                      loc: str) -> RecordEvidence | None:
         """Extract clean linking evidence from a free-text chunk."""
+        text = canonical_clean(text, decode_escapes=True)
         phones: set[str] = set()
         mrns: set[str] = set()
         aadhaar: set[str] = set()
@@ -1156,16 +1146,37 @@ class Pipeline:
         return self.linker.get_patient_key(idx)
 
     def _clean_csv_header(self, header: list[str]) -> list[str]:
-        """Sanitize CSV header strings (identifiers + known patient names)."""
+        """Sanitize CSV header strings (identifiers + known patient names across encodings)."""
         clean_header = []
         for h in header:
-            new_h = h
-            for m in reversed(find_all_identifiers(new_h)):
-                new_h = new_h[:m.start] + f"[{m.type}]" + new_h[m.end:]
-            if self._gazetteer_rx is not None:
-                new_h = self._gazetteer_rx.sub("[REDACTED]", new_h)
-            clean_header.append(new_h)
+            clean_header.append(self._clean_key_or_header_text(h, name_tag="[REDACTED]"))
         return clean_header
+
+    def _clean_key_or_header_text(self, raw: str, name_tag: str = "[REDACTED]") -> str:
+        """Scrub identifiers and known names from a key/header using normalized span mapping."""
+        norm, s_map, e_map = normalize_with_map(raw, decode_escapes=True)
+        repls: list[tuple[int, int, str]] = []
+        for m in find_all_identifiers_raw(norm):
+            os_idx, oe_idx = map_norm_span(s_map, e_map, m.start, m.end)
+            repls.append((os_idx, oe_idx, f"[{m.type}]"))
+        if self._gazetteer_rx is not None:
+            for m in self._gazetteer_rx.finditer(norm):
+                os_idx, oe_idx = map_norm_span(s_map, e_map, m.start(), m.end())
+                if not any(os_idx < re_ and oe_idx > rs for rs, re_, _ in repls):
+                    repls.append((os_idx, oe_idx, name_tag))
+        if not repls:
+            return raw
+        repls.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+        result = raw
+        filtered = []
+        last_e = -1
+        for st, en, rep in repls:
+            if st >= last_e:
+                filtered.append((st, en, rep))
+                last_e = en
+        for st, en, rep in reversed(filtered):
+            result = result[:st] + rep + result[en:]
+        return result
 
     def _sanitize_csv(self, text: str, ext: str, rel: str,
                        records: list) -> tuple[str, list[dict]]:
@@ -1456,13 +1467,19 @@ class Pipeline:
                     c += 1
                 clean_k = f"{raw_clean_k}_{c}"
 
-            # Decode & sanitize base64 payloads using full TextSanitizer
+            # Decode & sanitize base64 / hex payloads using full TextSanitizer
             if kl == "data" and isinstance(v, str):
                 dec = _try_decode_b64_text(v)
                 if dec is not None:
                     san = TextSanitizer(known_names=self.all_names, patient_key=patient_key, pseudonym=pid, date_hint=date_hint)
                     cleaned_dec = san.sanitize(dec)
                     result[clean_k] = b64mod.b64encode(cleaned_dec.encode("utf-8")).decode("ascii")
+                    continue
+                dec_hex = try_decode_hex_text(v)
+                if dec_hex is not None:
+                    san = TextSanitizer(known_names=self.all_names, patient_key=patient_key, pseudonym=pid, date_hint=date_hint)
+                    cleaned_dec = san.sanitize(dec_hex)
+                    result[clean_k] = cleaned_dec.encode("utf-8").hex() if cleaned_dec != dec_hex else v
                     continue
 
             col_type = classify_column(k_str)
@@ -1591,41 +1608,51 @@ class Pipeline:
         if dec is not None:
             san = TextSanitizer(known_names=self.all_names, patient_key=patient_key, pseudonym=pid, date_hint=date_hint)
             return b64mod.b64encode(san.sanitize(dec).encode("utf-8")).decode("ascii")
+        dec_hex = try_decode_hex_text(s)
+        if dec_hex is not None:
+            san = TextSanitizer(known_names=self.all_names, patient_key=patient_key, pseudonym=pid, date_hint=date_hint)
+            cleaned_hex = san.sanitize(dec_hex)
+            return cleaned_hex.encode("utf-8").hex() if cleaned_hex != dec_hex else s
 
-        medical_spans = find_medical_spans(s)
-        doctor_spans = find_doctor_spans(s)
+        san = TextSanitizer(known_names=self.all_names, patient_key=patient_key, pseudonym=pid, date_hint=date_hint)
+        s = san._scrub_inline_encoded(s)
+        norm_s, s_map, e_map = normalize_with_map(s, decode_escapes=True)
+
+        medical_spans = find_medical_spans(norm_s)
+        doctor_spans = find_doctor_spans(norm_s)
         repls: list[tuple[int, int, str]] = []
+
+        def _add_repl(ns: int, ne: int, rep: str) -> None:
+            os_idx, oe_idx = map_norm_span(s_map, e_map, ns, ne)
+            if not any(os_idx < re_ and oe_idx > rs for rs, re_, _ in repls):
+                repls.append((os_idx, oe_idx, rep))
 
         _HARD = {"MRN", "PHONE", "AADHAAR", "AADHAAR_MASKED", "ABHA_NUMBER",
                  "ABHA_ADDRESS", "PAN", "EMAIL", "INSURANCE_ID"}
-        for m in find_all_identifiers(s):
+        for m in find_all_identifiers_raw(norm_s):
             if m.type in _HARD or not overlaps_medical(m.start, m.end, medical_spans):
-                if not any(m.start < re_ and m.end > rs for rs, re_, _ in repls):
-                    repls.append((m.start, m.end, f"[{m.type}]"))
+                _add_repl(m.start, m.end, f"[{m.type}]")
 
-        for nm in find_names_in_text(s, self.all_names, self._gazetteer_rx):
+        for nm in find_names_in_text(norm_s, self.all_names, self._gazetteer_rx):
             if nm.role == "doctor":
                 continue
             if any(nm.start < de and nm.end > ds for ds, de in doctor_spans):
                 continue
             if nm.role != "context" and overlaps_medical(nm.start, nm.end, medical_spans):
                 continue
-            if any(nm.start < re_ and nm.end > rs for rs, re_, _ in repls):
-                continue
             repl = pid if (pid and nm.role == "patient") else ("[RELATIVE]" if nm.role == "relative" else "[NAME]")
-            repls.append((nm.start, nm.end, repl))
+            _add_repl(nm.start, nm.end, repl)
 
         if self._gazetteer_rx is not None:
-            for m in self._gazetteer_rx.finditer(s):
+            for m in self._gazetteer_rx.finditer(norm_s):
                 pos, end = m.start(), m.end()
-                if (pos > 0 and s[pos - 1].isdigit()) or (end < len(s) and s[end].isdigit()):
+                if (pos > 0 and norm_s[pos - 1].isdigit()) or (end < len(norm_s) and norm_s[end].isdigit()):
                     continue
                 if any(pos < de and end > ds for ds, de in doctor_spans):
                     continue
                 if overlaps_medical(pos, end, medical_spans):
                     continue
-                if not any(pos < re_ and end > rs for rs, re_, _ in repls):
-                    repls.append((pos, end, pid if pid else "[NAME]"))
+                _add_repl(pos, end, pid if pid else "[NAME]")
 
         repls.sort(key=lambda x: (x[0], -(x[1] - x[0]), x[2]))
         filtered = []
@@ -1646,27 +1673,30 @@ class Pipeline:
         cached = self._clean_key_cache.get(key)
         if cached is not None:
             return cached
-        result = key
-        for m in reversed(find_all_identifiers(result)):
-            result = result[:m.start] + f"[{m.type}]" + result[m.end:]
-        if self._gazetteer_rx is not None:
-            result = self._gazetteer_rx.sub("[REDACTED]", result)
-        result = PHONE_RX.sub("[PHONE]", result)
+        result = self._clean_key_or_header_text(key, name_tag="[REDACTED]")
         if len(self._clean_key_cache) < 2048:
             self._clean_key_cache[key] = result
         return result
 
     def _clean_metadata_path(self, path: str, pid: str | None) -> str:
         """Clean PII (names, phones, MRNs, and bare 5-8 digit ID cores) from metadata paths."""
-        result = path
-        if self._gazetteer_rx is not None:
-            result = self._gazetteer_rx.sub("REDACTED", result)
-        result = PHONE_RX.sub("[PHONE]", result)
-        for m in find_mrn(result):
-            result = result.replace(m.surface, pid if pid else "[MRN]")
-        # Strip bare 5-8 digit MRN suffixes inside paths (e.g. "Kavita_Pandey_064371")
-        result = re.sub(r"\d{5,8}", "[ID]", result)
-        return result
+        norm = canonical_clean(path, decode_escapes=True)
+        src = norm if norm != path else path
+
+        def _scrub_path(target: str) -> str:
+            res = target
+            if self._gazetteer_rx is not None:
+                res = self._gazetteer_rx.sub("REDACTED", res)
+            res = PHONE_RX.sub("[PHONE]", res)
+            for m in find_mrn(res):
+                res = res.replace(m.surface, pid if pid else "[MRN]")
+            res = re.sub(r"\d{5,8}", "[ID]", res)
+            return res
+
+        cleaned = _scrub_path(src)
+        if norm != path and cleaned == src:
+            return path
+        return cleaned
 
     def _sanitize_text(self, text: str, rel: str,
                         records: list) -> tuple[str, list[dict]]:

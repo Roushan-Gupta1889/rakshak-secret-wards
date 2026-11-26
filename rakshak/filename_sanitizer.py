@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from .detectors import PHONE_RX
+from .detectors import PHONE_RX, canonical_clean, find_all_identifiers_raw
 
 # MRN patterns in order from most specific to least specific
 _MRN_IN_FILENAME_RX = re.compile(
@@ -92,36 +92,61 @@ def sanitize_filename(rel_path: str, known_names: set[str] | None = None) -> tup
 
     changed = False
 
-    # 1. Strip leading 10-digit phone number  e.g. "7148988804_report_0047"
-    phone_match = re.match(r"^(\d{10})_(.+)$", name_part)
-    if phone_match:
-        name_part = phone_match.group(2)
-        changed = True
+    def _scrub_part(src: str) -> tuple[str, bool]:
+        part = src
+        did_change = False
 
-    # 2. Strip any inline phone numbers remaining (e.g. middle of path part)
-    new_np = PHONE_RX.sub("PHONE", name_part)
-    if new_np != name_part:
-        name_part = new_np
-        changed = True
+        # 1. Strip leading 10-digit phone number  e.g. "7148988804_report_0047"
+        phone_match = re.match(r"^(\d{10})_(.+)$", part)
+        if phone_match:
+            part = phone_match.group(2)
+            did_change = True
 
-    # 3. Strip MRN patterns  e.g. "JJH-0076928", "IP-26-00130", "IPD-2026-00432"
-    new_np = _MRN_IN_FILENAME_RX.sub("MRN", name_part)
-    if new_np != name_part:
-        name_part = new_np
-        changed = True
+        # 2. Strip any inline phone numbers or encoded identifiers remaining
+        new_np = PHONE_RX.sub("PHONE", part)
+        if new_np != part:
+            part = new_np
+            did_change = True
 
-    # 4. Strip known patient names  e.g. "Reena_Nishad", "Fatima_Bano"
-    multi_rx, single_rx = _compile_filename_patterns(known)
-    if multi_rx is not None:
-        new_np = multi_rx.sub("REDACTED", name_part)
-        if new_np != name_part:
-            name_part = new_np
+        # 3. Strip MRN patterns  e.g. "JJH-0076928", "IP-26-00130", "IPD-2026-00432"
+        new_np = _MRN_IN_FILENAME_RX.sub("MRN", part)
+        if new_np != part:
+            part = new_np
+            did_change = True
+
+        # 3b. Strip any other identifiers (Aadhaar, PAN, email, etc.)
+        id_hits = find_all_identifiers_raw(part)
+        if id_hits:
+            for im in reversed(id_hits):
+                part = part[:im.start] + im.type + part[im.end:]
+            did_change = True
+
+        # 4. Strip known patient names  e.g. "Reena_Nishad", "Fatima_Bano"
+        multi_rx, single_rx = _compile_filename_patterns(known)
+        if multi_rx is not None:
+            new_np = multi_rx.sub("REDACTED", part)
+            if new_np != part:
+                part = new_np
+                did_change = True
+        if single_rx is not None:
+            new_np = single_rx.sub("REDACTED", part)
+            if new_np != part:
+                part = new_np
+                did_change = True
+
+        return part, did_change
+
+    # Run first on normalized/decoded form when obfuscation/escapes are present
+    norm_part = canonical_clean(name_part, decode_escapes=True)
+    if norm_part != name_part:
+        cleaned_norm, norm_hit = _scrub_part(norm_part)
+        if norm_hit:
+            name_part = cleaned_norm
             changed = True
-    if single_rx is not None:
-        new_np = single_rx.sub("REDACTED", name_part)
-        if new_np != name_part:
-            name_part = new_np
-            changed = True
+        else:
+            name_part, changed = _scrub_part(name_part)
+    else:
+        name_part, changed = _scrub_part(name_part)
 
     # 5. Clean up multiple underscores/hyphens
     name_part = re.sub(r"[_\-]{2,}", "_", name_part)
