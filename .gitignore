@@ -39,3 +39,7 @@ Thumbs.db
 
 # Large output files
 *.log
+
+# Frontend packages & build output
+apps/web/node_modules/
+apps/web/dist/
