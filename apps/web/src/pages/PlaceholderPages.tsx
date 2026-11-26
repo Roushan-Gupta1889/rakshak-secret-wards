@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ArrowLeft, Cpu, GitBranch, KeyRound, ShieldAlert } from "lucide-react";
+import { ArrowLeft, Cpu, GitBranch, ShieldAlert } from "lucide-react";
 import { useHealthQuery, usePolicyQuery } from "@/api/queries";
 import { DataTable } from "@/components/tables/DataTable";
 import { Badge, ProvenanceBadge } from "@/components/ui/badge";
@@ -9,29 +9,21 @@ import { Panel, PanelContent, PanelDescription, PanelHeader, PanelTitle } from "
 import { ErrorState, SectionHeader } from "@/components/ui/state-views";
 import { useUiStore, type NavPageId } from "@/stores/uiStore";
 
-type DeferredPageId = Exclude<NavPageId, "overview" | "studio" | "registry" | "policies">;
+type DeferredPageId = Exclude<
+  NavPageId,
+  "overview" | "studio" | "registry" | "unlinkability" | "policies"
+>;
 
 const DEFERRED_META: Record<
   DeferredPageId,
   {
     title: string;
     subtitle: string;
-    icon: typeof KeyRound;
+    icon: typeof ShieldAlert;
     endpoints: string[];
     capabilities: string[];
   }
 > = {
-  unlinkability: {
-    title: "Unlinkability & Crypto Lab",
-    subtitle: "Domain-separated rejection sampling inspector and numeric-collision verification.",
-    icon: KeyRound,
-    endpoints: ["Frozen Phase 1E crypto.py verification (offline CLI harness)"],
-    capabilities: [
-      "Demonstrate deterministic PSN-XXXXXX generation with at least one alphabetic Crockford character",
-      "Verify secret isolation and key rotation unlinkability without leaking RAKSHA_SECRET",
-      "Surface Phase 1E rejection-sampling telemetry across synthetic patient key batches",
-    ],
-  },
   privacy: {
     title: "Privacy Attack & Cohort Lab",
     subtitle: "Adversarial A1–A7 simulation suite and adaptive k-anonymity cohort inspector.",
@@ -56,7 +48,7 @@ export function Phase2CPlaceholder({ pageId }: { pageId: DeferredPageId }) {
         title={meta.title}
         subtitle={meta.subtitle}
         provenance="EMPTY"
-        provenanceLabel="PHASE 2E · RESERVED MODULE"
+        provenanceLabel="PHASE 2F · RESERVED MODULE"
         rightSlot={
           <Button variant="secondary" size="sm" onClick={() => setActivePage("overview")}>
             <ArrowLeft className="h-3.5 w-3.5" />
@@ -72,9 +64,9 @@ export function Phase2CPlaceholder({ pageId }: { pageId: DeferredPageId }) {
               <Icon className="h-4 w-4" />
             </div>
             <div>
-              <PanelTitle>Reserved for Phase 2E Interactive Workflows</PanelTitle>
+              <PanelTitle>Reserved for Phase 2F Interactive Workflows</PanelTitle>
               <PanelDescription>
-                Sanitization Studio and Medical Registry are live. Privacy attack labs and cryptographic unlinkability verification workflows are scheduled for Phase 2E.
+                Sanitization Studio, Medical Registry, and Unlinkability Lab are active. Adversarial attack simulation workflows are scheduled for Phase 2F.
               </PanelDescription>
             </div>
           </div>
@@ -267,7 +259,7 @@ export function PoliciesArchitecturePage() {
           <PanelHeader>
             <div className="flex items-center gap-2">
               <Cpu className="h-4 w-4 text-cyan-400" />
-              <PanelTitle>Phase 2A → 2D API Contract Boundary</PanelTitle>
+              <PanelTitle>Phase 2A → 2E API Contract Boundary</PanelTitle>
             </div>
             <Badge variant="derived">VERIFIED CONTRACT</Badge>
           </PanelHeader>
@@ -282,7 +274,7 @@ export function PoliciesArchitecturePage() {
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800/80 bg-[#080E1C] px-3 py-2">
               <code className="break-all font-mono text-slate-300">POST /api/runs &amp; /api/runs/&#123;id&#125;*</code>
-              <Badge variant="live">LIVE · STUDIO &amp; REGISTRY</Badge>
+              <Badge variant="live">LIVE · STUDIO, REGISTRY &amp; LAB</Badge>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800/80 bg-[#080E1C] px-3 py-2">
               <code className="break-all font-mono text-amber-300">GET /api/analytics/benchmark</code>

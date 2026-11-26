@@ -4,6 +4,7 @@ import { MedicalRegistryPage } from "@/pages/MedicalRegistryPage";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { Phase2CPlaceholder, PoliciesArchitecturePage } from "@/pages/PlaceholderPages";
 import { SanitizationStudioPage } from "@/pages/SanitizationStudioPage";
+import { UnlinkabilityLabPage } from "@/pages/UnlinkabilityLabPage";
 import { useUiStore } from "@/stores/uiStore";
 
 const queryClient = new QueryClient({
@@ -25,9 +26,10 @@ function ConsoleRouter() {
       return <SanitizationStudioPage />;
     case "registry":
       return <MedicalRegistryPage />;
+    case "unlinkability":
+      return <UnlinkabilityLabPage />;
     case "policies":
       return <PoliciesArchitecturePage />;
-    case "unlinkability":
     case "privacy":
       return <Phase2CPlaceholder pageId={activePage} />;
     default:

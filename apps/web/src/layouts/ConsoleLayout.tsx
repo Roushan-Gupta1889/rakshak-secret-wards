@@ -33,8 +33,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: "overview", label: "Overview", group: "MONITORING", icon: LayoutDashboard },
   { id: "studio", label: "Sanitization Studio", group: "WORKFLOW", icon: FlaskConical },
   { id: "registry", label: "Medical Registry", group: "WORKFLOW", icon: Database },
-  { id: "unlinkability", label: "Unlinkability Lab", group: "UPCOMING MODULES", icon: FileKey2, badge: "2E" },
-  { id: "privacy", label: "Privacy Analytics", group: "UPCOMING MODULES", icon: Activity, badge: "2E" },
+  { id: "unlinkability", label: "Unlinkability Lab", group: "WORKFLOW", icon: FileKey2 },
+  { id: "privacy", label: "Privacy Analytics", group: "UPCOMING MODULES", icon: Activity, badge: "2F" },
   { id: "policies", label: "Policies & Architecture", group: "GOVERNANCE", icon: Scale },
 ];
 
