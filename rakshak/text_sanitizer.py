@@ -43,6 +43,16 @@ _CO_NON_NAME_WORDS = {
     "chest", "burning", "swelling", "bleeding", "nausea", "fatigue",
 }
 _ADDR_WARD_RX = re.compile(r"(?i)(?:Address|Addr|C/O)[^\n]*?\bWard\s+(\d+)\b")
+_TEXT_DIST_LABEL_RX = re.compile(
+    r"(?i)(\b(?:District|Distt\.?|Dist\.?|जिला)(?:\s+[:=.\-]?\s*|\s*[:=.\-]\s*))"
+    r"(?!Hospital\b|Clinic\b|Health\b|Medical\b)"
+    r"([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F ]{1,30}?)"
+    r"(?=[,\n;|\]}\-]|\s{2,}|\s+-|\s+\d|$)"
+)
+_HOSPITAL_CITY_RX = re.compile(
+    r"(?im)(\b(?:Hospital|Charitable Hospital|Multispeciality Hospital|Clinic|Seva Sadan|Nursing Home|Medical Centre|Medical Center|Institute)(?:\s+[A-Z][a-z]+){0,2})"
+    r",\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?=\s*(?:\n|$))"
+)
 _INLINE_B64_RX = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{24,}={0,2}(?![A-Za-z0-9+/=])")
 _INLINE_HEX_RX = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{24,}(?![0-9a-fA-F])")
 
@@ -70,7 +80,15 @@ class TextSanitizer:
                  date_hint: str = "dmy",
                  enable_pin: bool = True,
                  gazetteer_rx: re.Pattern | None = None,
-                 _decode_containers: bool = True):
+                 _decode_containers: bool = True,
+                 age_width: int = 5,
+                 age_top_code: int = 85,
+                 suppress_age: bool = False,
+                 suppress_dob: bool = False,
+                 mask_pin: bool = False,
+                 coarsen_district: bool = False,
+                 district_label: str = "[DISTRICT]",
+                 mask_hospital_city: bool = False):
         self.known_names = known_names or set()
         self.patient_key = patient_key
         self.pseudonym = pseudonym
@@ -78,6 +96,14 @@ class TextSanitizer:
         self.enable_pin = enable_pin
         self.gazetteer_rx = gazetteer_rx if gazetteer_rx is not None else compile_gazetteer_rx(self.known_names)
         self._decode_containers = _decode_containers
+        self.age_width = age_width
+        self.age_top_code = age_top_code
+        self.suppress_age = suppress_age
+        self.suppress_dob = suppress_dob
+        self.mask_pin = mask_pin
+        self.coarsen_district = coarsen_district
+        self.district_label = district_label
+        self.mask_hospital_city = mask_hospital_city
 
     def _scrub_inline_encoded(self, text: str) -> str:
         """Sanitize embedded base64 and hex-encoded UTF-8 payloads inside free text."""
@@ -96,6 +122,14 @@ class TextSanitizer:
                     enable_pin=self.enable_pin,
                     gazetteer_rx=self.gazetteer_rx,
                     _decode_containers=False,
+                    age_width=self.age_width,
+                    age_top_code=self.age_top_code,
+                    suppress_age=self.suppress_age,
+                    suppress_dob=self.suppress_dob,
+                    mask_pin=self.mask_pin,
+                    coarsen_district=self.coarsen_district,
+                    district_label=self.district_label,
+                    mask_hospital_city=self.mask_hospital_city,
                 )
             return child
 
@@ -238,12 +272,25 @@ class TextSanitizer:
             vs = m.start() + m.group(0).find(village)
             _add_repl(vs, vs + len(village), "[VILLAGE]")
 
-        # 6. DOB (shift if patient key available)
+        # 5b. Generalized district & hospital trailing city under adaptive privacy plan
+        if self.coarsen_district:
+            for m in _TEXT_DIST_LABEL_RX.finditer(norm_text):
+                d_val = m.group(2).strip()
+                if not d_val or d_val.upper().startswith("["):
+                    continue
+                ds = m.start(2)
+                de = ds + len(d_val)
+                _add_repl(ds, de, self.district_label)
+        if self.mask_hospital_city:
+            for m in _HOSPITAL_CITY_RX.finditer(norm_text):
+                _add_repl(m.start(), m.end(), m.group(1))
+
+        # 6. DOB (shift if patient key available and allowed by plan; otherwise suppress)
         for m in DOB_LABEL_RX.finditer(norm_text):
             date_str = m.group(1)
             ds = m.start() + m.group(0).find(date_str)
             de = ds + len(date_str)
-            if self.patient_key:
+            if self.patient_key and not self.suppress_dob:
                 shifted = shift_date_string(date_str, self.patient_key, self.date_hint)
                 _add_repl(ds, de, shifted)
             else:
@@ -253,7 +300,10 @@ class TextSanitizer:
         if self.enable_pin:
             for m in _find_pin_raw(norm_text):
                 if not overlaps_medical(m.start, m.end, medical_spans):
-                    pin_gen = m.surface[:3] + "***" if len(m.surface) >= 6 else "[PIN]"
+                    if self.mask_pin:
+                        pin_gen = "[PIN]"
+                    else:
+                        pin_gen = m.surface[:3] + "***" if len(m.surface) >= 6 else "[PIN]"
                     _add_repl(m.start, m.end, pin_gen)
 
         # 8. Known names gazetteer fallback — skip doctors, medical spans, and covered spans
@@ -285,7 +335,12 @@ class TextSanitizer:
             result = result[:s] + r + result[e:]
 
         # Generalize ages in text (including 48/F, Age: 48, आयु: 65 वर्ष)
-        result = generalize_age_in_text(result)
+        result = generalize_age_in_text(
+            result,
+            width=self.age_width,
+            top_code=self.age_top_code,
+            suppress_age=self.suppress_age,
+        )
 
         # Shift remaining dates if patient key available
         if self.patient_key:

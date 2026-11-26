@@ -6,6 +6,7 @@ import base64 as b64mod
 import csv
 import datetime as dt
 import json
+import os
 import re
 import sys
 import time
@@ -37,6 +38,7 @@ from .linker import (
 from .text_sanitizer import TextSanitizer
 from .fhir_handler import sanitize_fhir_bundle
 from .filename_sanitizer import sanitize_filename
+from .k_anonymity import ClusterPrivacyPlan, build_cluster_plans
 
 
 def load_policy(path: Path) -> dict:
@@ -45,6 +47,7 @@ def load_policy(path: Path) -> dict:
         "age_band_years": 5,
         "date_shift_max_days": 180,
         "min_group_size": 5,
+        "privacy_mode": "adaptive_k_mixed",
     }
     if not path.is_file():
         return policy
@@ -182,18 +185,24 @@ def _is_multi_patient_index(data: dict) -> bool:
     return len(mrns) >= 3 or len(phones) >= 3
 
 
-def _shift_age_sex_cell(cell: str, width: int = 5) -> str:
-    """Generalize combined age/sex strings like '65/F' -> '65-69/F' or '85+/F'."""
+def _shift_age_sex_cell(cell: str, width: int = 5, top_code: int = 85,
+                         suppress_age: bool = False) -> str:
+    """Generalize combined age/sex strings like '65/F' -> '65-69/F', '70+/F', or '[AGE]/F'."""
     m = re.match(r"^\s*(\d{1,3})\s*(?:([A-Za-z]+)\s*)?([/\-\s]*[MFmf])?\s*$", cell)
     if not m:
         return cell
     age_val = int(m.group(1))
     if not (0 < age_val < 120):
         return cell
-    band = age_band(age_val, width)
+    band = "[AGE]" if suppress_age else age_band(age_val, width, top_code)
     mid = f" {m.group(2)}" if m.group(2) else ""
     tail = m.group(3) or ""
     return f"{band}{mid}{tail}"
+
+
+_HOSPITAL_JSON_CITY_RX = re.compile(
+    r"(?i)(\b(?:Hospital|Charitable Hospital|Multispeciality Hospital|Clinic|Seva Sadan|Nursing Home|Medical Centre|Medical Center|Institute)(?:\s+[A-Z][a-z]+){0,2}),\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?$"
+)
 
 
 class Pipeline:
@@ -206,6 +215,7 @@ class Pipeline:
         self.policy = policy
         self.age_width = int(policy.get("age_band_years", 5))
         self.date_shift_max = int(policy.get("date_shift_max_days", 180))
+        self.min_group_size = int(policy.get("min_group_size", 5))
 
         # Accumulators
         self.files_report: list[dict] = []
@@ -221,12 +231,42 @@ class Pipeline:
         # Linker & O(1) lookup index
         self.linker = PatientLinker()
         self._record_idx_map: dict[tuple[str, str], int] = {}
+        self._cluster_plans: dict[str, ClusterPrivacyPlan] = {}
+        self._fallback_plan = ClusterPrivacyPlan(age_width=self.age_width)
 
         # Name collection (populated in pass 1)
         self.all_names: set[str] = set()
         self.doctor_names: set[str] = set()
         self._gazetteer_rx: re.Pattern | None = None
         self._clean_key_cache: dict[str, str] = {}
+
+    def _get_privacy_plan(self, patient_key: str | None) -> ClusterPrivacyPlan:
+        """Return adaptive cohort privacy plan for a linked cluster or fallback."""
+        if patient_key and patient_key in self._cluster_plans:
+            return self._cluster_plans[patient_key]
+        return self._fallback_plan
+
+    def _make_text_sanitizer(self, patient_key: str | None, pid: str | None,
+                             date_hint: str = "dmy", enable_pin: bool = True,
+                             plan: ClusterPrivacyPlan | None = None) -> TextSanitizer:
+        """Construct a TextSanitizer configured with the cluster's adaptive privacy plan."""
+        p = plan or self._get_privacy_plan(patient_key)
+        return TextSanitizer(
+            known_names=self.all_names,
+            patient_key=patient_key,
+            pseudonym=pid,
+            date_hint=date_hint,
+            enable_pin=enable_pin,
+            gazetteer_rx=self._gazetteer_rx,
+            age_width=p.age_width,
+            age_top_code=p.age_top_code,
+            suppress_age=(p.age_mode == "suppress"),
+            suppress_dob=(p.dob_mode == "suppress"),
+            mask_pin=p.mask_pin,
+            coarsen_district=p.coarsen_district,
+            district_label=p.district_label,
+            mask_hospital_city=p.mask_hospital_city,
+        )
 
     def run(self) -> dict:
         """Execute the full pipeline. Returns the report dict."""
@@ -273,6 +313,14 @@ class Pipeline:
 
         # ─── Pass 2: Link records ───────────────────────────────────────
         self._run_linker(raw_data)
+
+        # ─── Pass 2b: Build adaptive cohort privacy plans (k-anonymity + rare risk) ─
+        self._cluster_plans, self._fallback_plan = build_cluster_plans(
+            raw_data,
+            self.linker,
+            self.policy,
+            mode_override=os.environ.get("RAKSHA_PRIVACY_MODE") or None,
+        )
 
         # ─── Pass 3: Sanitize and export ────────────────────────────────
         used_out_paths: dict[str, int] = {}
@@ -1285,6 +1333,7 @@ class Pipeline:
         for i, row in enumerate(body):
             patient_key = self._get_patient_key_for_record(rel, f"row:{i}")
             pid = pseudonym(patient_key) if patient_key else None
+            plan = self._get_privacy_plan(patient_key)
 
             clean_row = []
             has_pii = False
@@ -1292,7 +1341,7 @@ class Pipeline:
                 ct = col_types[j] if j < len(col_types) else ColumnType.UNKNOWN
                 h_str = header[j] if j < len(header) else ""
                 row_hint = "mdy" if "mm/dd" in h_str.lower() else date_hint_default
-                cleaned = self._clean_cell(cell, ct, patient_key, pid, row_hint)
+                cleaned = self._clean_cell(cell, ct, patient_key, pid, row_hint, plan)
                 if cleaned != cell:
                     has_pii = True
                 clean_row.append(cleaned)
@@ -1330,10 +1379,12 @@ class Pipeline:
         return write_csv(clean_header, clean_body, delim), records
 
     def _clean_cell(self, cell: str, col_type: str, patient_key: str | None,
-                     pid: str | None, date_hint: str = "dmy") -> str:
-        """Clean a single CSV cell based on its column type."""
+                     pid: str | None, date_hint: str = "dmy",
+                     plan: ClusterPrivacyPlan | None = None) -> str:
+        """Clean a single CSV cell based on its column type and adaptive privacy plan."""
         if not cell.strip():
             return cell
+        p = plan or self._get_privacy_plan(patient_key)
 
         if col_type == ColumnType.DOCTOR:
             return cell
@@ -1368,7 +1419,7 @@ class Pipeline:
             return pid if pid else "[MRN]"
         elif col_type == ColumnType.DOB:
             self.stats["identifiers_detected"] += 1
-            if patient_key:
+            if patient_key and p.dob_mode != "suppress":
                 return shift_date_string(cell, patient_key, hint=date_hint, max_days=self.date_shift_max)
             return "[DOB]"
         elif col_type == ColumnType.CLINICAL_DATE:
@@ -1380,15 +1431,17 @@ class Pipeline:
                 age_val = int(re.search(r"\d+", cell).group())
                 if 0 < age_val < 120:
                     self.stats["records_generalized"] += 1
-                    return age_band(age_val, self.age_width)
+                    return "[AGE]" if p.age_mode == "suppress" else age_band(age_val, p.age_width, p.age_top_code)
             except (ValueError, AttributeError):
                 pass
             return cell
         elif col_type == ColumnType.AGE_SEX:
             self.stats["records_generalized"] += 1
-            return _shift_age_sex_cell(cell, self.age_width)
+            return _shift_age_sex_cell(cell, p.age_width, p.age_top_code, p.age_mode == "suppress")
         elif col_type == ColumnType.PIN:
             self.stats["identifiers_detected"] += 1
+            if p.mask_pin:
+                return "[PIN]"
             return "[PIN]" if len(re.sub(r"\D", "", cell)) != 6 else re.sub(r"\D", "", cell)[:3] + "***"
         elif col_type == ColumnType.VILLAGE:
             self.stats["identifiers_detected"] += 1
@@ -1400,25 +1453,23 @@ class Pipeline:
             self.stats["identifiers_detected"] += 1
             return "[TEHSIL]"
         elif col_type == ColumnType.DISTRICT:
+            if p.coarsen_district:
+                self.stats["records_generalized"] += 1
+                return p.district_label
             return cell
         elif col_type == ColumnType.LANDMARK:
             self.stats["identifiers_detected"] += 1
             return "[LANDMARK]"
         elif col_type == ColumnType.SAFE:
-            return self._clean_unknown_cell(cell, patient_key, pid, enable_pin=False)
+            return self._clean_unknown_cell(cell, patient_key, pid, enable_pin=False, plan=p)
         else:
-            return self._clean_unknown_cell(cell, patient_key, pid, enable_pin=True)
+            return self._clean_unknown_cell(cell, patient_key, pid, enable_pin=True, plan=p)
 
     def _clean_unknown_cell(self, cell: str, patient_key: str | None,
-                             pid: str | None, enable_pin: bool = True) -> str:
+                             pid: str | None, enable_pin: bool = True,
+                             plan: ClusterPrivacyPlan | None = None) -> str:
         """Clean a free-text/unknown cell preserving doctors and medical spans."""
-        sanitizer = TextSanitizer(
-            known_names=self.all_names,
-            patient_key=patient_key,
-            pseudonym=pid,
-            enable_pin=enable_pin,
-            gazetteer_rx=self._gazetteer_rx,
-        )
+        sanitizer = self._make_text_sanitizer(patient_key, pid, enable_pin=enable_pin, plan=plan)
         cleaned = sanitizer.sanitize(cell)
         if cleaned != cell:
             self.stats["identifiers_detected"] += 1
@@ -1439,7 +1490,8 @@ class Pipeline:
                         records: list) -> tuple[str, list[dict]]:
         patient_key = self._get_patient_key_for_record(rel, "doc")
         pid = pseudonym(patient_key) if patient_key else None
-        result = sanitize_fhir_bundle(data, patient_key, pid, self.all_names)
+        plan = self._get_privacy_plan(patient_key)
+        result = sanitize_fhir_bundle(data, patient_key, pid, self.all_names, plan=plan)
         out_str = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
         emitted_pid = pid if (pid and pid in out_str) else None
         records.append({"file": f"sanitized/{rel}", "loc": "doc", "patient": emitted_pid})
@@ -1468,7 +1520,8 @@ class Pipeline:
                         loc = f"/{pk_ptr}/{i}"
                         item_pkey = self._get_patient_key_for_record(rel, loc)
                         item_pid = pseudonym(item_pkey) if item_pkey else None
-                        cleaned_item = self._clean_json_value_iter(item, item_pkey, item_pid, k, date_hint)
+                        item_plan = self._get_privacy_plan(item_pkey)
+                        cleaned_item = self._clean_json_value_iter(item, item_pkey, item_pid, k, date_hint, item_plan)
                         emitted_pid = (
                             item_pid if (item_pid and item_pid in json.dumps(cleaned_item, ensure_ascii=False)) else None
                         )
@@ -1480,13 +1533,14 @@ class Pipeline:
                         out_items.append(cleaned_item)
                     cleaned[clean_k] = out_items
                 else:
-                    cleaned[clean_k] = self._clean_json_value_iter(v, None, None, k, date_hint)
+                    cleaned[clean_k] = self._clean_json_value_iter(v, None, None, k, date_hint, self._fallback_plan)
             return json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n", records
 
         # Whole document = single record (e.g. lab report_00005.json, scanned_consent_form, deep_export, patient_index)
         doc_pkey = None if is_index else self._get_patient_key_for_record(rel, "doc")
         doc_pid = pseudonym(doc_pkey) if doc_pkey else None
-        cleaned = self._clean_json_value_iter(data, doc_pkey, doc_pid, "", date_hint)
+        doc_plan = self._get_privacy_plan(doc_pkey)
+        cleaned = self._clean_json_value_iter(data, doc_pkey, doc_pid, "", date_hint, doc_plan)
         out_str = json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n"
         emitted_pid = doc_pid if (doc_pid and doc_pid in out_str) else None
         records.append({
@@ -1498,8 +1552,10 @@ class Pipeline:
 
     def _clean_json_value_iter(self, root, patient_key: str | None,
                                 pid: str | None, root_parent_key: str = "",
-                                date_hint: str = "dmy"):
+                                date_hint: str = "dmy",
+                                plan: ClusterPrivacyPlan | None = None):
         """Iterative JSON sanitizer safe for arbitrary nesting depth (1500+ levels)."""
+        p = plan or self._get_privacy_plan(patient_key)
         # Handle single-key deep wrapper chains iteratively first
         prefix_keys: list[str] = []
         cur = root
@@ -1513,22 +1569,29 @@ class Pipeline:
             prefix_keys.append(self._clean_json_key(str(only_k)))
             cur = only_v
 
-        sanitized_core = self._clean_json_shallow(cur, patient_key, pid, root_parent_key, date_hint, depth=0)
+        sanitized_core = self._clean_json_shallow(cur, patient_key, pid, root_parent_key, date_hint, depth=0, plan=p)
         for pk in reversed(prefix_keys):
             sanitized_core = {pk: sanitized_core}
         return sanitized_core
 
     def _clean_json_shallow(self, obj, patient_key: str | None, pid: str | None,
-                             parent_key: str, date_hint: str, depth: int):
+                             parent_key: str, date_hint: str, depth: int,
+                             plan: ClusterPrivacyPlan | None = None):
         """Recursively clean bounded JSON subtrees (delegates any deep chains safely)."""
+        p = plan or self._get_privacy_plan(patient_key)
         if depth > 400 and isinstance(obj, dict) and len(obj) == 1:
-            return self._clean_json_value_iter(obj, patient_key, pid, parent_key, date_hint)
+            return self._clean_json_value_iter(obj, patient_key, pid, parent_key, date_hint, p)
 
         if isinstance(obj, str):
-            return self._clean_json_string(obj, patient_key, pid, date_hint)
+            pkl_str = parent_key.lower()
+            if pkl_str == "hospital" and p.mask_hospital_city:
+                return _HOSPITAL_JSON_CITY_RX.sub(r"\1", obj)
+            if pkl_str == "lab" and p.mask_hospital_city:
+                return re.sub(r"\s*\([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\)$", "", obj)
+            return self._clean_json_string(obj, patient_key, pid, date_hint, p)
         if isinstance(obj, list):
             return [
-                self._clean_json_shallow(item, patient_key, pid, parent_key, date_hint, depth + 1)
+                self._clean_json_shallow(item, patient_key, pid, parent_key, date_hint, depth + 1, p)
                 for item in obj
             ]
         if not isinstance(obj, dict):
@@ -1595,7 +1658,9 @@ class Pipeline:
                     or (kl in ("uri", "url") and not str(v).startswith(("http://hl7.org", "http://loinc.org", "http://snomed.info", "urn:")))) and isinstance(v, str):
                 result[clean_k] = self._clean_metadata_path(v, pid)
             elif kl == "hospital" and isinstance(v, str):
-                result[clean_k] = v
+                result[clean_k] = _HOSPITAL_JSON_CITY_RX.sub(r"\1", v) if p.mask_hospital_city else v
+            elif kl == "lab" and isinstance(v, str):
+                result[clean_k] = re.sub(r"\s*\([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\)$", "", v) if p.mask_hospital_city else v
             elif kl == "exported_by" and isinstance(v, str):
                 result[clean_k] = v
             elif kl in ("name", "local") and isinstance(v, str):
@@ -1604,7 +1669,7 @@ class Pipeline:
                 elif col_type == ColumnType.PATIENT_NAME:
                     result[clean_k] = pid if pid else "[NAME]"
                 else:
-                    result[clean_k] = self._clean_json_string(v, patient_key, pid, date_hint)
+                    result[clean_k] = self._clean_json_string(v, patient_key, pid, date_hint, p)
             elif kl in ("first", "last", "family", "given") and isinstance(v, str):
                 result[clean_k] = pid if pid else "[NAME]"
             elif kl == "name" and isinstance(v, dict):
@@ -1621,20 +1686,25 @@ class Pipeline:
                     elif "email" in ckl:
                         contact_obj[ck] = "[EMAIL]" if cv is not None else None
                     else:
-                        contact_obj[ck] = self._clean_json_shallow(cv, patient_key, pid, str(ck), date_hint, depth + 1)
+                        contact_obj[ck] = self._clean_json_shallow(cv, patient_key, pid, str(ck), date_hint, depth + 1, p)
                 result[clean_k] = contact_obj
             elif kl == "address" and isinstance(v, dict):
-                # Preserve generalized district/state in structured addresses while stripping street/tehsil/city/PIN
+                # Adaptively preserve or coarsen district in structured addresses while stripping fine location
                 addr_out = {}
                 for ak, av in v.items():
                     akl = str(ak).lower()
-                    if akl in ("district", "distt", "state", "country"):
+                    if akl in ("district", "distt"):
+                        addr_out[ak] = (p.district_label if (p.coarsen_district and av is not None) else av)
+                    elif akl in ("state", "country"):
                         addr_out[ak] = av
                     elif akl == "tehsil":
                         addr_out[ak] = "[TEHSIL]" if av is not None else None
                     elif akl in ("pin", "pincode", "zip", "postalcode") and av is not None:
-                        digits = re.sub(r"\D", "", str(av))
-                        addr_out[ak] = (digits[:3] + "***") if len(digits) == 6 else "[PIN]"
+                        if p.mask_pin:
+                            addr_out[ak] = "[PIN]"
+                        else:
+                            digits = re.sub(r"\D", "", str(av))
+                            addr_out[ak] = (digits[:3] + "***") if len(digits) == 6 else "[PIN]"
                     elif av is None:
                         addr_out[ak] = None
                     else:
@@ -1662,18 +1732,32 @@ class Pipeline:
                 else:
                     result[clean_k] = pid if pid else "[MRN]"
             elif col_type == ColumnType.DOB and isinstance(v, str):
-                result[clean_k] = shift_date_string(v, patient_key, hint=date_hint, max_days=self.date_shift_max) if patient_key else "[DOB]"
+                result[clean_k] = (
+                    shift_date_string(v, patient_key, hint=date_hint, max_days=self.date_shift_max)
+                    if (patient_key and p.dob_mode != "suppress")
+                    else "[DOB]"
+                )
             elif col_type == ColumnType.CLINICAL_DATE and isinstance(v, str):
                 result[clean_k] = shift_date_string(v, patient_key, hint=date_hint, max_days=self.date_shift_max) if patient_key else v
             elif col_type == ColumnType.AGE and isinstance(v, (str, int)):
                 try:
                     age_val = int(v) if isinstance(v, int) else int(re.search(r"\d+", str(v)).group())
-                    result[clean_k] = age_band(age_val, self.age_width) if 0 < age_val < 120 else v
+                    if 0 < age_val < 120:
+                        result[clean_k] = "[AGE]" if p.age_mode == "suppress" else age_band(age_val, p.age_width, p.age_top_code)
+                    else:
+                        result[clean_k] = v
                 except (ValueError, AttributeError):
                     result[clean_k] = v
+            elif col_type == ColumnType.AGE_SEX and isinstance(v, str):
+                result[clean_k] = _shift_age_sex_cell(v, p.age_width, p.age_top_code, p.age_mode == "suppress")
+            elif col_type == ColumnType.DISTRICT and isinstance(v, str):
+                result[clean_k] = p.district_label if p.coarsen_district else v
             elif col_type == ColumnType.PIN and isinstance(v, (str, int)):
-                digits = re.sub(r"\D", "", str(v))
-                result[clean_k] = (digits[:3] + "***") if len(digits) == 6 else "[PIN]"
+                if p.mask_pin:
+                    result[clean_k] = "[PIN]"
+                else:
+                    digits = re.sub(r"\D", "", str(v))
+                    result[clean_k] = (digits[:3] + "***") if len(digits) == 6 else "[PIN]"
             elif col_type == ColumnType.VILLAGE and isinstance(v, str):
                 result[clean_k] = "[VILLAGE]"
             elif col_type == ColumnType.ADDRESS and isinstance(v, str):
@@ -1692,31 +1776,33 @@ class Pipeline:
                         elif "relation" in skl:
                             rv[sk] = sv
                         else:
-                            rv[sk] = self._clean_json_shallow(sv, patient_key, pid, str(sk), date_hint, depth + 1)
+                            rv[sk] = self._clean_json_shallow(sv, patient_key, pid, str(sk), date_hint, depth + 1, p)
                     result[clean_k] = rv
                 else:
-                    result[clean_k] = self._clean_json_shallow(v, patient_key, pid, k_str, date_hint, depth + 1)
+                    result[clean_k] = self._clean_json_shallow(v, patient_key, pid, k_str, date_hint, depth + 1, p)
             else:
-                result[clean_k] = self._clean_json_shallow(v, patient_key, pid, k_str, date_hint, depth + 1)
+                result[clean_k] = self._clean_json_shallow(v, patient_key, pid, k_str, date_hint, depth + 1, p)
 
         return result
 
     def _clean_json_string(self, s: str, patient_key: str | None,
-                            pid: str | None, date_hint: str = "dmy") -> str:
+                            pid: str | None, date_hint: str = "dmy",
+                            plan: ClusterPrivacyPlan | None = None) -> str:
         """Clean PII from a free-text JSON string value (respecting doctors and medical spans)."""
         if not s or len(s) < 3:
             return s
+        p = plan or self._get_privacy_plan(patient_key)
         dec = _try_decode_b64_text(s)
         if dec is not None:
-            san = TextSanitizer(known_names=self.all_names, patient_key=patient_key, pseudonym=pid, date_hint=date_hint)
+            san = self._make_text_sanitizer(patient_key, pid, date_hint=date_hint, plan=p)
             return b64mod.b64encode(san.sanitize(dec).encode("utf-8")).decode("ascii")
         dec_hex = try_decode_hex_text(s)
         if dec_hex is not None:
-            san = TextSanitizer(known_names=self.all_names, patient_key=patient_key, pseudonym=pid, date_hint=date_hint)
+            san = self._make_text_sanitizer(patient_key, pid, date_hint=date_hint, plan=p)
             cleaned_hex = san.sanitize(dec_hex)
             return cleaned_hex.encode("utf-8").hex() if cleaned_hex != dec_hex else s
 
-        san = TextSanitizer(known_names=self.all_names, patient_key=patient_key, pseudonym=pid, date_hint=date_hint)
+        san = self._make_text_sanitizer(patient_key, pid, date_hint=date_hint, plan=p)
         s = san._scrub_inline_encoded(s)
         norm_s, s_map, e_map = normalize_with_map(s, decode_escapes=True)
 
@@ -1806,13 +1892,7 @@ class Pipeline:
         pid = pseudonym(patient_key) if patient_key else None
         date_hint = "mdy" if ("mdy" in rel.lower() or "arogya" in rel.lower()) else "dmy"
 
-        sanitizer = TextSanitizer(
-            known_names=self.all_names,
-            patient_key=patient_key,
-            pseudonym=pid,
-            date_hint=date_hint,
-            gazetteer_rx=self._gazetteer_rx,
-        )
+        sanitizer = self._make_text_sanitizer(patient_key, pid, date_hint=date_hint)
         result = sanitizer.sanitize(text)
         emitted_pid = pid if (pid and pid in result) else None
         records.append({"file": f"sanitized/{rel}", "loc": "doc", "patient": emitted_pid})

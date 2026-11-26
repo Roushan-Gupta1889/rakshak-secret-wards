@@ -116,8 +116,9 @@ _AGE_IN_TEXT = re.compile(
 _AGE_SLASH = re.compile(r"(?<![\d/])(\d{1,3})\s*(?:(Yrs?|Years?|वर्ष)\s*)?/\s*([MFmf])\b")
 
 
-def generalize_age_in_text(text: str, width: int = 5) -> str:
-    """Replace exact ages (ASCII, Indic digits, or zero-width obfuscated) with 5-year bands."""
+def generalize_age_in_text(text: str, width: int = 5, top_code: int = 85,
+                           suppress_age: bool = False) -> str:
+    """Replace exact ages (ASCII, Indic digits, or zero-width obfuscated) with adaptive bands or [AGE]."""
     norm, s_map, e_map = normalize_with_map(text, decode_escapes=False)
     repls: list[tuple[int, int, str]] = []
 
@@ -126,14 +127,15 @@ def generalize_age_in_text(text: str, width: int = 5) -> str:
         if age_val < 1 or age_val > 120:
             continue
         os_idx, oe_idx = map_norm_span(s_map, e_map, m.start(2), m.end(2))
-        repls.append((os_idx, oe_idx, age_band(age_val, width)))
+        rep = "[AGE]" if suppress_age else age_band(age_val, width, top_code)
+        repls.append((os_idx, oe_idx, rep))
 
     for m in _AGE_SLASH.finditer(norm):
         age_val = int(m.group(1))
         if age_val < 1 or age_val > 120:
             continue
         os_idx, oe_idx = map_norm_span(s_map, e_map, m.start(), m.end())
-        band = age_band(age_val, width)
+        band = "[AGE]" if suppress_age else age_band(age_val, width, top_code)
         unit = f" {m.group(2)}" if m.group(2) else ""
         repls.append((os_idx, oe_idx, f"{band}{unit}/{m.group(3)}"))
 

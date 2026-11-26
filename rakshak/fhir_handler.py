@@ -12,14 +12,36 @@ _ISO_DATE_VALUE_RX = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T\s].*)?$")
 _TEXT_HTML_TAG_RX = re.compile(r"(<[^>]+>)")
 
 
+def _build_fhir_sanitizer(known_names: set[str] | None, patient_key: str | None,
+                          pseudonym: str | None, plan=None) -> TextSanitizer:
+    """Create TextSanitizer configured with adaptive cohort privacy plan."""
+    known = known_names or set()
+    if plan is None:
+        return TextSanitizer(known_names=known, patient_key=patient_key, pseudonym=pseudonym)
+    return TextSanitizer(
+        known_names=known,
+        patient_key=patient_key,
+        pseudonym=pseudonym,
+        age_width=plan.age_width,
+        age_top_code=plan.age_top_code,
+        suppress_age=(plan.age_mode == "suppress"),
+        suppress_dob=(plan.dob_mode == "suppress"),
+        mask_pin=plan.mask_pin,
+        coarsen_district=plan.coarsen_district,
+        district_label=plan.district_label,
+        mask_hospital_city=plan.mask_hospital_city,
+    )
+
+
 def _clean_extensions(extensions: list, pseudonym: str | None,
                        known_names: set[str] | None,
-                       patient_key: str | None = None) -> None:
+                       patient_key: str | None = None,
+                       plan=None) -> None:
     """Clean PII from FHIR extension valueString / valueHumanName fields."""
     if not extensions:
         return
     known = known_names or set()
-    sanitizer = TextSanitizer(known_names=known, patient_key=patient_key, pseudonym=pseudonym)
+    sanitizer = _build_fhir_sanitizer(known, patient_key, pseudonym, plan)
     for ext in extensions:
         if not isinstance(ext, dict):
             continue
@@ -40,15 +62,16 @@ def _clean_extensions(extensions: list, pseudonym: str | None,
                     if len(name) >= 3 and name.lower() in val.lower():
                         ext["valueString"] = "[REDACTED]"
                         break
-        _clean_extensions(ext.get("extension", []), pseudonym, known_names, patient_key)
+        _clean_extensions(ext.get("extension", []), pseudonym, known_names, patient_key, plan)
 
 
 def _clean_resource_data_fields(resource: dict, patient_key: str | None,
                                   pseudonym: str | None,
-                                  known_names: set[str] | None) -> None:
+                                  known_names: set[str] | None,
+                                  plan=None) -> None:
     """Recursively clean base64 data fields using the full TextSanitizer."""
     known = known_names or set()
-    sanitizer = TextSanitizer(known_names=known, patient_key=patient_key, pseudonym=pseudonym)
+    sanitizer = _build_fhir_sanitizer(known, patient_key, pseudonym, plan)
 
     def _clean_value(val: str) -> str:
         dec = try_decode_b64_text(val)
@@ -96,7 +119,8 @@ def _shift_fhir_dates_recursive(obj, patient_key: str) -> None:
 
 def sanitize_fhir_bundle(data: dict, patient_key: str | None = None,
                           pseudonym: str | None = None,
-                          known_names: set[str] | None = None) -> dict:
+                          known_names: set[str] | None = None,
+                          plan=None) -> dict:
     """Sanitize a FHIR R4 Bundle, keeping structure, references, and types valid."""
     result = copy.deepcopy(data)
 
@@ -111,12 +135,13 @@ def sanitize_fhir_bundle(data: dict, patient_key: str | None = None,
         res_type = resource.get("resourceType", "")
 
         if res_type == "Patient":
-            _sanitize_patient_resource(resource, patient_key, pseudonym)
+            _sanitize_patient_resource(resource, patient_key, pseudonym, plan)
         elif res_type == "RelatedPerson":
             _sanitize_related_person(resource)
         elif res_type == "Practitioner":
             _clean_resource_text_div(resource, None)
         elif res_type == "Organization":
+            _sanitize_organization(resource, plan)
             _clean_resource_text_div(resource, None)
         elif res_type == "Encounter":
             _sanitize_encounter(resource, patient_key, pseudonym)
@@ -129,7 +154,7 @@ def sanitize_fhir_bundle(data: dict, patient_key: str | None = None,
             _sanitize_subject_display(resource, pseudonym)
             _clean_resource_text_div(resource, pseudonym)
         elif res_type == "Composition":
-            _sanitize_composition(resource, patient_key, pseudonym, known_names)
+            _sanitize_composition(resource, patient_key, pseudonym, known_names, plan)
 
         # Shift dates consistently across non-Patient clinical resources
         if patient_key and res_type not in ("Patient", "Practitioner", "Organization", "RelatedPerson"):
@@ -144,8 +169,8 @@ def sanitize_fhir_bundle(data: dict, patient_key: str | None = None,
             if find_all_identifiers(val):
                 ident["value"] = pseudonym or "[REDACTED]"
 
-        _clean_extensions(resource.get("extension", []), pseudonym, known_names, patient_key)
-        _clean_resource_data_fields(resource, patient_key, pseudonym, known_names)
+        _clean_extensions(resource.get("extension", []), pseudonym, known_names, patient_key, plan)
+        _clean_resource_data_fields(resource, patient_key, pseudonym, known_names, plan)
 
     return result
 
@@ -159,7 +184,7 @@ def _sanitize_subject_display(resource: dict, pseudonym: str | None) -> None:
 
 
 def _sanitize_patient_resource(resource: dict, patient_key: str | None,
-                                 pseudonym: str | None):
+                                 pseudonym: str | None, plan=None):
     """Sanitize Patient resource."""
     _clean_resource_text_div(resource, pseudonym)
 
@@ -182,14 +207,20 @@ def _sanitize_patient_resource(resource: dict, patient_key: str | None,
             addr["line"] = ["[REDACTED]"]
         if "city" in addr:
             addr["city"] = "[REDACTED]"
+        if plan and plan.coarsen_district:
+            if "district" in addr:
+                addr["district"] = plan.district_label
         if "postalCode" in addr:
-            pc = str(addr["postalCode"])
-            if len(pc) == 6:
-                addr["postalCode"] = pc[:3] + "***"
+            if plan and plan.mask_pin:
+                addr["postalCode"] = "[PIN]"
+            else:
+                pc = str(addr["postalCode"])
+                if len(pc) == 6:
+                    addr["postalCode"] = pc[:3] + "***"
 
-    # DOB: shift if patient_key available; omit rather than emit invalid date syntax if unlinked
+    # DOB: shift only when patient_key exists AND plan permits; otherwise omit cleanly for valid FHIR R4
     if "birthDate" in resource:
-        if patient_key:
+        if patient_key and (not plan or plan.dob_mode != "suppress"):
             resource["birthDate"] = shift_date_string(resource["birthDate"],
                                                        patient_key, hint="ymd")
         else:
@@ -264,6 +295,25 @@ def _sanitize_related_person(resource: dict):
             addr["line"] = ["[REDACTED]"]
 
 
+def _sanitize_organization(resource: dict, plan=None) -> None:
+    """Mask identifying geographic location fields on Organization while preserving hospital name."""
+    if not plan or not (plan.coarsen_district or plan.mask_hospital_city):
+        return
+    for addr in resource.get("address", []):
+        if not isinstance(addr, dict):
+            continue
+        if "city" in addr:
+            addr["city"] = "[REDACTED]"
+        if "district" in addr:
+            addr["district"] = plan.district_label
+        if "text" in addr:
+            addr["text"] = "[REDACTED]"
+        if "line" in addr:
+            addr["line"] = ["[REDACTED]"]
+        if "postalCode" in addr and plan.mask_pin:
+            addr["postalCode"] = "[PIN]"
+
+
 def _sanitize_encounter(resource: dict, patient_key: str | None, pseudonym: str | None):
     """Sanitize Encounter resource: clean display and shift dates."""
     _sanitize_subject_display(resource, pseudonym)
@@ -277,22 +327,24 @@ def _sanitize_encounter(resource: dict, patient_key: str | None, pseudonym: str 
 
 def _sanitize_composition(resource: dict, patient_key: str | None,
                             pseudonym: str | None,
-                            known_names: set[str] | None):
+                            known_names: set[str] | None,
+                            plan=None):
     """Sanitize Composition resource: clean subject and narrative sections."""
     _sanitize_subject_display(resource, pseudonym)
     for section in resource.get("section", []):
         text_obj = section.get("text", {})
         if isinstance(text_obj, dict) and "div" in text_obj:
             text_obj["div"] = _clean_html_pii(
-                text_obj["div"], patient_key, pseudonym, known_names
+                text_obj["div"], patient_key, pseudonym, known_names, plan
             )
 
 
 def _clean_html_pii(html: str, patient_key: str | None = None,
                      pseudonym: str | None = None,
-                     known_names: set[str] | None = None) -> str:
+                     known_names: set[str] | None = None,
+                     plan=None) -> str:
     """Clean PII from FHIR narrative HTML divs without breaking XHTML tags."""
-    sanitizer = TextSanitizer(known_names=known_names, patient_key=patient_key, pseudonym=pseudonym)
+    sanitizer = _build_fhir_sanitizer(known_names, patient_key, pseudonym, plan)
     parts = _TEXT_HTML_TAG_RX.split(html)
     out = []
     for part in parts:

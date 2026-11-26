@@ -31,10 +31,10 @@ def shift_date(value: dt.date, patient_key: str, max_days: int = 180) -> dt.date
     return value + dt.timedelta(days=date_shift_days(patient_key, max_days))
 
 
-def age_band(age: int, width: int = 5) -> str:
-    """5-year age band containing the true age: 45 → '45-49'; top-codes ≥85 as '85+'."""
-    if age >= 85:
-        return "85+"
+def age_band(age: int, width: int = 5, top_code: int = 85) -> str:
+    """Age band containing true age: e.g. 45 -> '45-49'; top-codes >= top_code as '<top_code>+'."""
+    if age >= top_code:
+        return f"{top_code}+"
     lo = (age // width) * width
     return f"{lo}-{lo + width - 1}"
 
