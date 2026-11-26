@@ -1,0 +1,5 @@
+# Phase 2 Local API dependencies (isolated from Stage 1 stdlib requirements.txt)
+fastapi>=0.115
+uvicorn>=0.30
+pydantic>=2.7
+python-multipart>=0.0.9
