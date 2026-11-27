@@ -1,66 +1,59 @@
-# Team RAKSHAK (`team-rakshak`): Multilingual Indian Hospital Records Privacy Firewall
+# Team RAKSHAK (`team-rakshak`): Multilingual Privacy Firewall for Secret Wards
 
-**Track 3 · Secret Wards** · **Tech Stack**: Python 3.10+ (stdlib only, 0 external models) · **Repo**: https://github.com/Roushan-Gupta1889/rakshak-secret-wards
+**Track 3 · Secret Wards** · **Stage 1 Engine:** Python 3.10+ stdlib only (`phase-1e-v1`) · **Repo:** https://github.com/Roushan-Gupta1889/rakshak-secret-wards
 
 ## 1. Team & Pitch
 
-**Pitch**: RAKSHAK is a deterministic, fully offline, CPU-only privacy firewall that eliminates PII leaks (**0 real leaks**, **0/4 canaries**) and preserves **100.0%** of clinical utility (**4,855 / 4,855** probes) across English, Devanagari, and Hinglish hospital exports in **7.7 seconds** and **30.7 MB** RAM.
+**Pitch:** RAKSHAK is a deterministic, fully offline, CPU-only privacy firewall that eliminates multilingual PII leaks (**0 / 3,230** leaks and **0 / 4** canaries under LF evaluation), preserves **98.1%** of clinical utility (**0** false merges), and resists automated re-identification attacks using corpus-adaptive k-anonymity and rejection-sampled HMAC pseudonyms—backed by a sandboxed FastAPI + React local audit console.
 
-## 2. Architecture
+## 2. System Architecture (Stage 1 Pipeline + Isolated Audit Console)
 
-```
-Input Files (CSV / TSV / JSON / FHIR R4 / TXT)
+```text
+Input Batch (CSV / TSV / JSON / FHIR R4 / TXT + Unsupported Binary Stubs)
    │
-   ▼  Pass 1 — Global Name & Context Assembly (multi-encoding + iterative deep JSON + b64 decode)
-   │           Exclude Doctor (Dr.) spans & institutional words; compile O(N) sorted gazetteer
-   ▼  Pass 2 — Cluster-Safe Two-Phase Patient Linking (Akshara Deva→Latin + Indic phonetics)
-   │           Phase 1: Strong IDs (Phone/Aadhaar/ABHA/PAN/MRN) → Phase 2: Name+corroborator
-   │           Cluster compatibility guards prevent transitive merges → HMAC-SHA256 PSN-XXXXXX
-   ▼  Pass 3 — Context-Aware Sanitization & Fail-Safe Export
-   │           Hard-PII bypass (MRN/Phone/Aadhaar) + medical/Dr. protection + per-patient date shift
-   │           Age bands (5-yr & 85+) + 3-digit PIN + Tehsil/village removal + FHIR R4 + filename scrub
+   ▼  Pass 1 — Global Name & Context Assembly (UTF-8 / BOM / UTF-16 / CP1252)
+   │           NFKC + homoglyph folding, 1,500-deep JSON walk, span-mapped b64/escape decode
+   │           Statistical CSV + CamelCase schema classifier; Dr. span + trap exclusions; O(N) gazetteer
+   ▼  Pass 2 — Cluster-Safe Cross-Script Linking (Akshara Deva→Latin + Indic phonetics)
+   │           Phase 1: Phone/Aadhaar/ABHA/PAN/MRN → Phase 2: Name + pooled cluster checks
+   ▼  Pass 2b — Adaptive k-Anonymity Planning (min_group_size = 5, adaptive_k_mixed)
+   │           Keeps fine 5-yr bands & districts in dense cohorts; generalizes rare/sparse outliers
+   ▼  Pass 3 — Hardened Privacy Layer & Fail-Closed Export
+   │           HMAC-SHA256 PSN-XXXXXX w/ rejection sampling (\x00rej|{c}|{key}) → >=1 alpha char
+   │           Per-patient non-zero ±180d date shifts (exact LOS), FHIR R4 scrub, filename/key scrub,
+   │           quarantine unsupported files (.pdf/.jpg/.xml/corrupt) -> output: null in report.json
    ▼
-Output: sanitized/ (mirrored tree) + report.json (SHA-256 map) + records.jsonl (verified PSN links)
+Output Tree: sanitized/ (mirrored UTF-8) + report.json + records.jsonl
+   ▲  [Optional Phase 2 Subprocess Boundary — Zero In-Process Pipeline Imports]
+   └── Local FastAPI Security Adapter (Host/Origin/CSRF, 5 MiB/file, immediate rmtree purge)
+       └── Offline React Audit Console (Evaluator Demo, Studio, Registry, Unlinkability Lab, Analytics)
 ```
 
-## 3. How Each Part Works
+## 3. How Each Component Works
 
-- **Ingestion**: Decodes UTF-8, UTF-8-BOM, UTF-16, and CP1252 in-memory. Uses an iterative JSON walker and wrapper-unwrapper so **1,500-deep nested JSON** (`deep_export.json`) processes safely. Mislabeled CSVs and undecodable/unsupported formats (`.pdf`, `.jpg`, `.xml`, empty/truncated files) are quarantined cleanly (`5 / 200`).
-- **Multilingual Detection**: Combines regex detectors for Indian IDs (Aadhaar, masked Aadhaar, ABHA, PAN, +91/Devanagari phones `०–९`, insurance, 11 hospital MRN prefixes) with structured Hindi labels (`मरीज़ का नाम:`, `नाम:`, `पिता/पति का नाम:`), Devanagari vowel-matra/nukta token boundaries, case-sensitive contextual traps (`C/O` care-of vs `C/O cough`, `K/C/O`, `attended/witnessed by`), and a cached longest-first lexicographically ordered gazetteer.
-- **Linkage & HMAC Pseudonyms**: Uses akshara-aware Devanagari-to-Latin transliteration and Indic phonetic folding (`chaudhary`/`choudhary`, `pandey`/`पांडे`, `tiwari`/`तिवारी`) with blocking over phone, MRN, and phonetic name keys. Two-phase greedy merging links exact IDs (+50..+65) first, then soft evidence (`threshold=36.0`) only when pooled cluster gender, age (`±5 yrs`), village, phone, and hospital MRNs agree. Keyed `HMAC-SHA256(RAKSHA_SECRET, patient_key)` produces irreversible `PSN-XXXXXX` tokens.
-- **Privacy Layer**: Shifts every patient date (including ISO `effectiveDateTime`, CSV clinical dates, and month-name visit dates) by a non-zero per-patient `HMAC` offset (`±180` days), preserving exact lengths of stay. Ages use 5-year bands and `85+` top-coding; PINs keep 3-digit prefixes (`226***`); street addresses, villages, and Tehsils are scrubbed while retaining `District` utility.
-- **FHIR & Hidden Channels**: Recursively cleans FHIR R4 `text.div` XHTML, `Patient`/`RelatedPerson`/`Composition`/`DocumentReference`, extensions, and base64 payloads via the full `TextSanitizer`; protects `Practitioner`/`Organization` names and maintains valid R4 references and ISO dates. Sanitizes filenames, CSV headers, JSON keys (with collision disambiguation), and `source_path` digit suffixes.
+- **Ingestion & Normalization:** Decodes UTF-8/BOM/UTF-16/CP1252 purely in RAM. An iterative JSON walker handles 1,500-deep exports cleanly. Adversarial NFKC/homoglyph folding and span-mapped unescaping inspect raw text, headers, JSON keys, metadata paths, filenames, and Base64 attachments (`Phase 1A`). Empty, corrupt, or unsupported files (`.pdf`, `.jpg`, `.xml`) fail closed to quarantine.
+- **Multilingual Detection & Schema Inference:** Combines statistical CSV header inference and word-boundary/CamelCase column matching (`Phase 1B`) with regex detectors for Indian IDs (Aadhaar/masked Aadhaar, ABHA, PAN, +91 & Devanagari digits `०–९`, insurance IDs, and structural hospital MRNs in `Phase 1C`), Hindi labels (`मरीज़ का नाम:`, `पिता/पति का नाम:`), contextual traps (`C/O` relative vs `C/O fever`, `K/C/O`, `attended/witnessed by`), and multi-token `Dr.` protection.
+- **Cross-Script Linkage & Numeric-Hardened HMAC Pseudonyms:** Blocks on phone, MRN, and akshara/phonetic keys (`tiwari`/`तिवारी`) with pooled compatibility checks preventing transitive false merges. `rakshak/crypto.py` (`Phase 1E`) assigns `PSN-XXXXXX` over Crockford Base-32 using domain-separated rejection sampling (`\x00rej|{counter}|{patient_key}`), eliminating all-digit `PSN-\d{6}` collisions (`~0.093%` rate) so numeric/PIN detectors (`A6`) gain zero signal.
+- **Adaptive k-Anonymity & Temporal Integrity:** Shifts all dates per patient by a non-zero `±180d` HMAC offset preserving exact inter-event intervals and hospital stays. Ages map to 5-year bands (`85+` top-coded), PINs to 3-digit prefixes (`226***`), and `adaptive_k_mixed` (`Phase 1D`) generalizes sparse cohort districts while preserving dense cohort utility, diagnoses, drugs, doses, vitals, and valid FHIR R4 Bundles.
 
 ## 4. Key Unfair Advantages (USP)
 
-1. **Zero-Conflict Doctor & Trap Disambiguation**: Word-boundary + CamelCase schema matching (`columns.py`) separates `doctor`, `history`, `collected_on`, `PlateletVal`, and `panels.name` from patient/relative PII; `find_doctor_spans()` protects every token of multi-word `Dr. X Y` names even when a patient shares the same surname.
-2. **Cluster-Safe Two-Phase Cross-Script Linkage**: Detecting multi-patient index dictionaries (`patient_index.json`), excluding relative/hospital/header tokens, and checking cluster compatibility during greedy merging achieves **0 wrong merges** (`precision 1.000`, `F0.5 0.994`).
-3. **Full Cross-Channel Scrubbing at 7.7s / 31 MB**: Decodes nested JSON base64 payloads (stopping witness canaries like `Tsering Wangmo` with 0 leaks) using pre-compiled regex/memoization — deterministic to the byte (`PYTHONHASHSEED`-invariant).
+1. **Unseen-Format & Trap Resilience:** Built to beat the calibration chaos gap—uses statistical column inference, generic structural MRN matching, and medical-span guards rather than hardcoded dataset filenames or templates.
+2. **Cluster-Safe Cross-Script Linking (`0` Wrong Merges):** Pools cluster gender, age, village, phone, and disjoint MRNs before merging, preserving clean longitudinal trajectories across Devanagari, Hinglish, and English (`F0.5 = 0.99`, `B3-F1` intact).
+3. **Adaptive Privacy + Zero A6 Pseudonym Inversion:** Jointly suppresses singleton rare-cohort QIs (`trap risk 1.000 → 0.0085`) and rejects all-digit Crockford pseudonyms while executing **pure Python stdlib** with zero cloud/LLM deps (`3.8s–4.8s`, `~30.8 MB` RSS).
 
-## 5. Privacy–Utility Trade-off & Generalisation (Measured)
+## 5. Privacy–Utility Trade-Off & Measured Evaluation
 
-| Metric | Raw `check_dev.py` | Proper Linux Hash Map |
-|---|---:|---:|
-| Personal data leaked — overall / content | 1.1%* / **0.0%** | **0** / **0.0%** |
-| Base64 / Metadata / Key / Header / Deva / Hinglish leaks | **0.0%** across all | **0.0%** across all |
-| Planted canaries / Raw broken copies | **0 / 4** / **0** | **0 / 4** / **0** |
-| Clinical & medical values preserved | **4,497 / 4,497 (100.0%)** | **4,855 / 4,855 (100.0%)** |
-| Patient linking precision / recall / F0.5 (wrong merges) | **1.00 / 0.89 / 0.98 (0)** | **1.000 / 0.969 / 0.994 (0)** |
-| Pseudonym consistency (`records.jsonl` ↔ output) | — | **776 / 776 (100.0%)** |
-| Wall time / Peak RSS memory | **7.7 s / 30.7 MB** | **7.7 s / 30.7 MB** |
+| Benchmark & Provenance | Privacy / Security | Clinical Utility & Integrity | Linking & Compute |
+| :--- | :--- | :--- | :--- |
+| **`check_submission.py --run`** (Official ToolKit) | **0** secret leaks; different secret -> unlinkable outputs | **CONTRACT OK**, deterministic same-secret tree, input unchanged | **`READY TO SUBMIT`** in **`3.8s`** |
+| **LF Practice Suite** (`200` files, Reconstructed Dev) | **0 / 3,230 (0.0%)** real PII leaked; **0 / 4** canaries; **0** raw copies | **4,763 / 4,855 (98.1%)** probes kept (only 92 sparse `[DISTRICT]` generalized) | Prec **`1.000`**, **`F0.5 = 0.99`**, **`0`** wrong merges; `5` quarantined |
+| **Local `eval_arena.py`** (Simulator, non-official) | `audit-sec-A`: **`97.57`** total (`0.9858` privacy, `A1=0`, `A2/3=0.0198`, `A4=0.0208`, `A5=0.0284`, `A6=0`, `A7=0`) | `utility = 0.9184`; **`19/19`** valid FHIR R4; **`14/14`** chaos checks PASS | `baseline-sec-A`: **`97.13`** (`4.8s`, `30.8 MB` RSS); trap risk `1.000 → 0.0085` |
+| **Crypto 100k Suite** (`test_phase1e.py`) | **100,000 / 100,000** valid alpha PSNs; `10/10` all-digit vectors remapped | Uniform Crockford distribution (`max_dev = 0.037`, `M = 1,072,741,824`) | `99,996/100,000` distinct (30-bit truncation); **`0/10,000`** cross-secret overlap |
 
-*\*Note: Windows Git CRLF checkout on `.txt`/`.json` alters input SHA-256 relative to Linux `truth.json`, causing `check_dev.py`'s SHA-256 rename map to fall back to unsanitized input paths on Windows; real filename + content leakage under matching bytes is **0**.*
+*Official confidential hidden-dataset competition scores remain `UNAVAILABLE` locally. On Windows CRLF checkouts, raw `check_dev.py` reads `98.0%` clinical probes and `0` leaks in content/Deva/Hinglish/base64/metadata/keys/headers alongside Windows CRLF SHA-256 rename-map fallback noise (`72.9%` filename artifact absent under Linux LF bytes).*
 
-- **Re-identification & Unseen Generalisation**: Across the sanitized corpus (`49` single-patient profiles), `23/49` remain unique on `(age_band, district)` and `49/49` on `(age_band, district, month, diagnosis)` (`85+` top-coding and Tehsil redaction reduce extreme-age/sub-district linkage without losing any of the 93 `district` clinical probes). On an unseen synthetic stress suite (CamelCase renamed columns `MemberFullName`, `PlateletVal`, `92 वर्ष`, Devanagari phone `मो: ९८२२०११२२३`, `C/O cough`, `Parkinsonism`, `attended by Rohan Deshmukh`, base64 witness `Ananya Gokhale`), **6 / 6 assertions passed** with zero code tuning.
+## 6. Security Design & Known Limitations
 
-## 6. Security Design
-
-- `RAKSHA_SECRET` exists strictly in process environment memory and is never persisted, logged, or included in `report.json` / stdout (verified by `check_submission.py`).
-- Zero temporary files created during execution; all decoding/sanitization stays in RAM.
-- Unsupported/broken formats are quarantined (`files_quarantined: 5`), and output pseudonym consistency is enforced on every emitted record.
-
-## 7. Known Limitations
-
-- Scanned images (`.jpg`) and binary PDFs are quarantined rather than OCR'd, trading ingestion of scanned media for zero leak risk.
-- Unprecedented non-standard hospital MRN formats outside labelled fields or known prefixes rely on phone/name co-occurrence.
-- Rare-condition records keep their 5-year/`85+` band and district; stricter k-anonymity suppression (`min_group_size: 5` on `(age_band, district)`) is configurable if district-level research probes are not required.
+- **Defense-in-Depth Boundary:** `RAKSHA_SECRET` resides exclusively in server/child env (zero disk writes, response fields, or browser storage). Stage 1 executes in memory; Phase 2 runs isolated CLI subprocesses behind strict loopback `Host`/`Origin`/CSRF/size checks and immediately purges staged raw uploads (`shutil.rmtree`). Built console bundles local fonts/ECharts with zero outbound requests.
+- **Honest Limitations:** Binary `.pdf`/`.jpg` scans are quarantined rather than OCR'd; rare outlier cohorts trade ~`1.9%` sparse `[DISTRICT]` probes for linkage resistance; unlabelled novel institutional ID formats rely on co-occurring PII cues; and Phase 2 filesystem cleanup performs OS unlinking (relying on host disk encryption).
