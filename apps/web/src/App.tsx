@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConsoleLayout } from "@/layouts/ConsoleLayout";
 import { MedicalRegistryPage } from "@/pages/MedicalRegistryPage";
 import { OverviewPage } from "@/pages/OverviewPage";
-import { PoliciesArchitecturePage } from "@/pages/PlaceholderPages";
+import { PoliciesArchitecturePage } from "@/pages/PoliciesArchitecturePage";
 import { RiskAnalyticsPage } from "@/pages/RiskAnalyticsPage";
 import { SanitizationStudioPage } from "@/pages/SanitizationStudioPage";
 import { UnlinkabilityLabPage } from "@/pages/UnlinkabilityLabPage";
