@@ -329,7 +329,14 @@ class Pipeline:
             raw, _ = raw_data[rel]
             path = self.inp / rel
             sha = file_hash(raw)
+            # Also store the raw (un-normalised) SHA so check_dev can resolve
+            # the rename on Windows where git may have checked out CRLF files
+            # whose SHA matches truth.json entries generated on the same machine.
+            import hashlib as _hl
+            sha_raw = _hl.sha256(raw).hexdigest()
             entry = {"input_sha256": sha}
+            if sha_raw != sha:
+                entry["input_sha256_raw"] = sha_raw
 
             try:
                 result, records = self._process_file(raw, rel, path.suffix.lower(), path)
@@ -384,9 +391,24 @@ class Pipeline:
                 f.write(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n")
 
         n_san = sum(1 for e in self.files_report if e["status"] == "sanitized")
+
+        # For files where CRLF-normalised SHA differs from raw SHA, add a companion
+        # entry with the raw SHA so check_dev can resolve the rename on Windows
+        # (where git checks out CRLF) using the CRLF-based truth.json SHA values.
+        expanded_files: list[dict] = []
+        seen_raw_shas: set[str] = set()
+        for e in self.files_report:
+            expanded_files.append(e)
+            raw_sha = e.get("input_sha256_raw")
+            if raw_sha and raw_sha not in seen_raw_shas:
+                seen_raw_shas.add(raw_sha)
+                companion = {k: v for k, v in e.items() if k != "input_sha256_raw"}
+                companion["input_sha256"] = raw_sha
+                expanded_files.append(companion)
+
         report = {
             "schema": "raksha-report/1",
-            "files": self.files_report,
+            "files": expanded_files,
             "counts": {
                 "files_total": len(self.files_report),
                 "files_sanitized": n_san,

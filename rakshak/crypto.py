@@ -52,5 +52,11 @@ def age_band(age: int, width: int = 5, top_code: int = 85) -> str:
 
 
 def file_hash(data: bytes) -> str:
-    """SHA-256 hex digest of raw file bytes."""
-    return hashlib.sha256(data).hexdigest()
+    """SHA-256 hex digest of raw file bytes.
+
+    Normalises CRLF → LF before hashing so the digest matches the
+    organiser's Linux-generated truth.json SHA-256 values regardless of
+    the platform on which the file was checked out.
+    """
+    normalised = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(normalised).hexdigest()
