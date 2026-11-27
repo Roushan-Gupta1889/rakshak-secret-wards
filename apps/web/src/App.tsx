@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConsoleLayout } from "@/layouts/ConsoleLayout";
+import { EvaluatorDemoPage } from "@/pages/EvaluatorDemoPage";
 import { MedicalRegistryPage } from "@/pages/MedicalRegistryPage";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { PoliciesArchitecturePage } from "@/pages/PoliciesArchitecturePage";
@@ -23,6 +24,8 @@ function ConsoleRouter() {
   switch (activePage) {
     case "overview":
       return <OverviewPage />;
+    case "demo":
+      return <EvaluatorDemoPage />;
     case "studio":
       return <SanitizationStudioPage />;
     case "registry":

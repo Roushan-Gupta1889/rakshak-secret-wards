@@ -2,6 +2,7 @@ import * as React from "react";
 import {
   Activity,
   ChevronRight,
+  Compass,
   Database,
   FileKey2,
   FlaskConical,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import { useHealthQuery } from "@/api/queries";
 import { ApiStatusPill } from "@/components/common/ApiStatusPill";
+import { EvaluatorGuideBar } from "@/components/demo/EvaluatorGuideBar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MobileDrawer } from "@/components/ui/mobile-drawer";
@@ -31,6 +33,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: "overview", label: "Overview", group: "MONITORING", icon: LayoutDashboard },
+  { id: "demo", label: "Evaluator Demo", group: "MONITORING", icon: Compass },
   { id: "studio", label: "Sanitization Studio", group: "WORKFLOW", icon: FlaskConical },
   { id: "registry", label: "Medical Registry", group: "WORKFLOW", icon: Database },
   { id: "unlinkability", label: "Unlinkability Lab", group: "WORKFLOW", icon: FileKey2 },
@@ -153,6 +156,12 @@ export function ConsoleLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen bg-[#070B14] text-slate-100">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-cyan-500 focus:px-3 focus:py-1.5 focus:text-xs focus:font-semibold focus:text-slate-950"
+      >
+        Skip to main content
+      </a>
       {/* Desktop Sidebar */}
       <aside
         className={cn(
@@ -236,7 +245,9 @@ export function ConsoleLayout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-6 sm:px-6">
+        <EvaluatorGuideBar />
+
+        <main id="main-content" className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-6 sm:px-6">
           {children}
         </main>
       </div>
