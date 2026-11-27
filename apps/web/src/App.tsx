@@ -2,7 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConsoleLayout } from "@/layouts/ConsoleLayout";
 import { MedicalRegistryPage } from "@/pages/MedicalRegistryPage";
 import { OverviewPage } from "@/pages/OverviewPage";
-import { Phase2CPlaceholder, PoliciesArchitecturePage } from "@/pages/PlaceholderPages";
+import { PoliciesArchitecturePage } from "@/pages/PlaceholderPages";
+import { RiskAnalyticsPage } from "@/pages/RiskAnalyticsPage";
 import { SanitizationStudioPage } from "@/pages/SanitizationStudioPage";
 import { UnlinkabilityLabPage } from "@/pages/UnlinkabilityLabPage";
 import { useUiStore } from "@/stores/uiStore";
@@ -31,7 +32,7 @@ function ConsoleRouter() {
     case "policies":
       return <PoliciesArchitecturePage />;
     case "privacy":
-      return <Phase2CPlaceholder pageId={activePage} />;
+      return <RiskAnalyticsPage />;
     default:
       return <OverviewPage />;
   }

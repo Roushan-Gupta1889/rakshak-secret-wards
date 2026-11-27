@@ -1,113 +1,11 @@
 import { useMemo } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ArrowLeft, Cpu, GitBranch, ShieldAlert } from "lucide-react";
+import { Cpu, GitBranch } from "lucide-react";
 import { useHealthQuery, usePolicyQuery } from "@/api/queries";
 import { DataTable } from "@/components/tables/DataTable";
 import { Badge, ProvenanceBadge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Panel, PanelContent, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/card";
 import { ErrorState, SectionHeader } from "@/components/ui/state-views";
-import { useUiStore, type NavPageId } from "@/stores/uiStore";
-
-type DeferredPageId = Exclude<
-  NavPageId,
-  "overview" | "studio" | "registry" | "unlinkability" | "policies"
->;
-
-const DEFERRED_META: Record<
-  DeferredPageId,
-  {
-    title: string;
-    subtitle: string;
-    icon: typeof ShieldAlert;
-    endpoints: string[];
-    capabilities: string[];
-  }
-> = {
-  privacy: {
-    title: "Privacy Attack & Cohort Lab",
-    subtitle: "Adversarial A1–A7 simulation suite and adaptive k-anonymity cohort inspector.",
-    icon: ShieldAlert,
-    endpoints: ["Planned simulation bridge over Secret-Wards-ToolKit evaluators"],
-    capabilities: [
-      "Run A1–A7 attacker probes and compare baseline vs hardened cohort-generalized outputs",
-      "Inspect adaptive cohort suppression/generalization against min_group_size: 5 policy constraints",
-      "Explore per-patient vulnerability reductions (including outlier cohort diagnostics)",
-    ],
-  },
-};
-
-export function Phase2CPlaceholder({ pageId }: { pageId: DeferredPageId }) {
-  const setActivePage = useUiStore((s) => s.setActivePage);
-  const meta = DEFERRED_META[pageId];
-  const Icon = meta.icon;
-
-  return (
-    <div className="space-y-6">
-      <SectionHeader
-        title={meta.title}
-        subtitle={meta.subtitle}
-        provenance="EMPTY"
-        provenanceLabel="PHASE 2F · RESERVED MODULE"
-        rightSlot={
-          <Button variant="secondary" size="sm" onClick={() => setActivePage("overview")}>
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Return to Overview
-          </Button>
-        }
-      />
-
-      <Panel>
-        <PanelHeader>
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-cyan-500/25 bg-cyan-500/10 text-cyan-300">
-              <Icon className="h-4 w-4" />
-            </div>
-            <div>
-              <PanelTitle>Reserved for Phase 2F Interactive Workflows</PanelTitle>
-              <PanelDescription>
-                Sanitization Studio, Medical Registry, and Unlinkability Lab are active. Adversarial attack simulation workflows are scheduled for Phase 2F.
-              </PanelDescription>
-            </div>
-          </div>
-          <Badge variant="cyan">NOT YET ACTIVE</Badge>
-        </PanelHeader>
-        <PanelContent className="grid gap-6 md:grid-cols-2">
-          <div>
-            <p className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
-              Planned Interactive Capabilities
-            </p>
-            <ul className="mt-3 space-y-2.5 text-xs text-slate-300">
-              {meta.capabilities.map((item) => (
-                <li key={item} className="flex items-start gap-2">
-                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400/80" />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="rounded-md border border-slate-800/80 bg-[#080E1C] p-3.5">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
-              Target Local Adapter Endpoints
-            </p>
-            <div className="mt-2.5 flex flex-wrap gap-2">
-              {meta.endpoints.map((ep) => (
-                <Badge key={ep} variant="default">
-                  {ep}
-                </Badge>
-              ))}
-            </div>
-            <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
-              All Phase 2C workflows remain strictly offline-first on loopback HTTP and invoke the frozen{" "}
-              <code className="font-mono text-slate-300">phase-1e-v1</code> CLI via isolated subprocesses.
-            </p>
-          </div>
-        </PanelContent>
-      </Panel>
-    </div>
-  );
-}
 
 interface PolicyParameterRow {
   key: string;
@@ -259,7 +157,7 @@ export function PoliciesArchitecturePage() {
           <PanelHeader>
             <div className="flex items-center gap-2">
               <Cpu className="h-4 w-4 text-cyan-400" />
-              <PanelTitle>Phase 2A → 2E API Contract Boundary</PanelTitle>
+              <PanelTitle>Phase 2A → 2F API Contract Boundary</PanelTitle>
             </div>
             <Badge variant="derived">VERIFIED CONTRACT</Badge>
           </PanelHeader>
@@ -274,7 +172,7 @@ export function PoliciesArchitecturePage() {
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800/80 bg-[#080E1C] px-3 py-2">
               <code className="break-all font-mono text-slate-300">POST /api/runs &amp; /api/runs/&#123;id&#125;*</code>
-              <Badge variant="live">LIVE · STUDIO, REGISTRY &amp; LAB</Badge>
+              <Badge variant="live">LIVE · STUDIO, REGISTRY, LAB &amp; RISK</Badge>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800/80 bg-[#080E1C] px-3 py-2">
               <code className="break-all font-mono text-amber-300">GET /api/analytics/benchmark</code>

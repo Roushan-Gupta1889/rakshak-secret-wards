@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ProvenanceBadge } from "@/components/ui/badge";
+import { ProvenanceBadge, type ProvenanceKind } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -16,7 +16,7 @@ export function KpiCard({
   label: string;
   value: string;
   sublabel: string;
-  provenance: "LIVE" | "DERIVED" | "FROZEN" | "EMPTY";
+  provenance: ProvenanceKind;
   provenanceLabel?: string;
   icon?: React.ReactNode;
   loading?: boolean;

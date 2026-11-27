@@ -1,6 +1,6 @@
 import * as React from "react";
 import { AlertTriangle, Inbox, RefreshCw, WifiOff } from "lucide-react";
-import { ProvenanceBadge } from "./badge";
+import { ProvenanceBadge, type ProvenanceKind } from "./badge";
 import { Button } from "./button";
 
 export function SectionHeader({
@@ -12,7 +12,7 @@ export function SectionHeader({
 }: {
   title: string;
   subtitle: string;
-  provenance?: "LIVE" | "DERIVED" | "FROZEN" | "EMPTY";
+  provenance?: ProvenanceKind;
   provenanceLabel?: string;
   rightSlot?: React.ReactNode;
 }) {

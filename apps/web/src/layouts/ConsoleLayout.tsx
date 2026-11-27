@@ -24,7 +24,7 @@ import { useUiStore, type NavPageId } from "@/stores/uiStore";
 interface NavItem {
   id: NavPageId;
   label: string;
-  group: "MONITORING" | "WORKFLOW" | "UPCOMING MODULES" | "GOVERNANCE";
+  group: "MONITORING" | "WORKFLOW" | "GOVERNANCE";
   icon: React.ComponentType<{ className?: string }>;
   badge?: string;
 }
@@ -34,11 +34,11 @@ const NAV_ITEMS: NavItem[] = [
   { id: "studio", label: "Sanitization Studio", group: "WORKFLOW", icon: FlaskConical },
   { id: "registry", label: "Medical Registry", group: "WORKFLOW", icon: Database },
   { id: "unlinkability", label: "Unlinkability Lab", group: "WORKFLOW", icon: FileKey2 },
-  { id: "privacy", label: "Privacy Analytics", group: "UPCOMING MODULES", icon: Activity, badge: "2F" },
+  { id: "privacy", label: "Risk Analytics", group: "WORKFLOW", icon: Activity },
   { id: "policies", label: "Policies & Architecture", group: "GOVERNANCE", icon: Scale },
 ];
 
-const NAV_GROUPS: NavItem["group"][] = ["MONITORING", "WORKFLOW", "UPCOMING MODULES", "GOVERNANCE"];
+const NAV_GROUPS: NavItem["group"][] = ["MONITORING", "WORKFLOW", "GOVERNANCE"];
 
 function SidebarContent({
   collapsed,
